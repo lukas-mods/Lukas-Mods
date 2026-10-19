@@ -1,5 +1,5 @@
 --[[
-    Parts Manager v1.0 -- by Luka's Mods  (live edits number the VERSION below)
+    Parts Manager v1.1 -- by Luka's Mods  (live edits number the VERSION below)
 
     Adds a "Parts Manager" app to the in-game tablet and the office
     computer. It shows what is in your warehouse storage and how many complete
@@ -11,6 +11,10 @@
       - single parts by car count: e.g. brake calipers for 2 cars = 8;
       - auto-stock: keeps a chosen number of complete builds in storage by
         topping it up in the background.
+      - workshop supplies (Workshop tab): car wash and body shop supplies,
+        bought 10 at a time or kept stocked by Auto Supplies;
+      - fuel delivery (Fuel Delivery tab): fills the gas pump hub's unlocked
+        tanks at the pump's price, by hand or with Auto Fuel.
 
       - Part names, prices and per-car quantities come from the game's own
         data tables (a car takes 4 calipers, 2 front shocks, ...).
@@ -24,11 +28,11 @@
 --]]
 
 local MOD = "PartsManager"
-local VERSION = "1.0"  -- live-edit number: the log names the code that ran
+local VERSION = "1.1"  -- live-edit number: the log names the code that ran
 local function log(msg) print("[" .. MOD .. "] " .. tostring(msg) .. "\n") end
 
 -- Trace logging, off by default: debug_trace=1 in settings.txt turns on the
--- crash breadcrumbs ("#n > what" when IM starts a piece of real work on the
+-- crash breadcrumbs ("#n > what" when the mod starts a piece of real work on the
 -- game thread, "#n <" when it finishes) and a 10 s heartbeat.
 local traceOn = false
 local crumbSeq = 0
@@ -58,6 +62,9 @@ local PRODUCT_TABLES = {
     { path = "/Game/CarDealerSim/DataAssets/Products/DT_Fluids.DT_Fluids", group = "fluid" },
     { path = "/Game/CarDealerSim/DataAssets/Products/DT_Components.DT_Components", group = "component" },
     { path = "/Game/CarDealerSim/DataAssets/Products/DT_FusesParts.DT_FusesParts", group = "fuse" },
+    -- Workshop supplies (game build 25989974): soap, wax, polish, discs, putty,
+    -- pads, paint. Row IDs carry the tier as a suffix (Wax_Base = Wax - Basic).
+    { path = "/Game/CarDealerSim/DataAssets/Products/DT_ConsumableMaterials.DT_ConsumableMaterials", group = "supply" },
 }
 -- Body work rather than mechanical parts: bought with the consumables.
 local BODY_PARTS = { Windshield = true }
@@ -73,6 +80,8 @@ local ADDS_PER_TICK = 20          -- items added to storage per game-thread pass
 local FUSES_PER_PACK = 3          -- fuses in one pack (the shop sells packs)
 local AVAIL_REFRESH_SECONDS = 60  -- how often the unlock check is re-run
 local AUTO_CHECK_SECONDS = 30     -- how often auto-stock looks at storage
+local SUPPLY_PACK = 10            -- workshop supplies bought by hand come 10 at a time
+local SUPPLY_STEP = 5             -- Auto Supplies' keep-N steps
 
 -------------------------------------------------------------------------------
 -- helpers
@@ -196,6 +205,12 @@ local settings = {
     -- keep one career); turn on with pause_auto_on_load=1 if you play several
     pauseOnLoad = false,
     perCar = {},
+    -- auto supplies: keep this many of each workshop supply (the chosen tier)
+    supplyOn = false, supplyTarget = 10,
+    -- auto fuel: fill every unlocked hub tank to full once their combined
+    -- fuel is below 10% of their combined capacity
+    fuelOn = false,
+    supplyTier = {},   -- supply group -> tier suffix ("Base"); unset = cheapest
 }
 for k, v in pairs(DEFAULT_PER_CAR) do settings.perCar[k] = v end
 
@@ -220,6 +235,10 @@ local function load_settings()
             elseif k == "money_floor" then settings.moneyFloor = math.max(0, tonumber(v) or 0)
             elseif k == "debug_trace" then traceOn = (v == "1")
             elseif k == "pause_auto_on_load" then settings.pauseOnLoad = (v == "1" or v == "true")
+            elseif k == "auto_supplies" then settings.supplyOn = (v == "1" or v == "true")
+            elseif k == "auto_fuel" then settings.fuelOn = (v == "1" or v == "true")
+            elseif k == "auto_supplies_target" then settings.supplyTarget = math.max(0, math.min(999, tonumber(v) or 10))
+            elseif k:match("^supply_tier%.") and v ~= "" then settings.supplyTier[k:sub(13)] = v
             end
         end
     end
@@ -237,7 +256,14 @@ local function save_settings()
         "auto_fuses_target=" .. settings.fuseTarget,
         "money_floor=" .. string.format("%d", settings.moneyFloor),
         "pause_auto_on_load=" .. (settings.pauseOnLoad and "1" or "0"),
+        "auto_supplies=" .. (settings.supplyOn and "1" or "0"),
+        "auto_supplies_target=" .. settings.supplyTarget,
+        "auto_fuel=" .. (settings.fuelOn and "1" or "0"),
     }
+    local groups = {}
+    for g in pairs(settings.supplyTier) do groups[#groups + 1] = g end
+    table.sort(groups)
+    for _, g in ipairs(groups) do lines[#lines + 1] = "supply_tier." .. g .. "=" .. settings.supplyTier[g] end
     if traceOn then lines[#lines + 1] = "debug_trace=1" end
     for _, c in ipairs({ "Stock", "Sport", "Race" }) do
         lines[#lines + 1] = "auto." .. c .. "=" .. (settings.autoOn[c] and "1" or "0")
@@ -456,7 +482,7 @@ end
 -- object. The shop creates those while it is open; otherwise we create our
 -- own copy (a plain data object owned by the player controller, never placed
 -- in the world) and ask it. Its path is kept so it is reused, not re-made.
--- (-27..-33 tried the class default objects instead: they answer "available"
+-- (The class default objects were tried instead: they answer "available"
 -- to everything, so Sport/Race opened at fame 1. The save crashes those builds
 -- chased turned out to be the in-game email, not these objects.)
 local lastAvailCheck = -1e9
@@ -618,6 +644,43 @@ local function builds_in_stock(lines, counts)
 end
 
 -------------------------------------------------------------------------------
+-- workshop supplies, grouped by base item; each group offers its tiers
+
+-- "Wax_Base" / "Wax - Basic" -> group "Wax", tier "Base", base "Wax", label "Basic".
+-- Built from the catalogue each time (it is short), in table order, so tiers
+-- added by a game update show up without a mod update.
+local function supply_groups()
+    local list, byKey = {}, {}
+    if not catalog then return list end
+    for _, e in ipairs(catalog) do
+        if e.group == "supply" then
+            local key, suffix = e.id:match("^(.+)_([^_]+)$")
+            if not key then key, suffix = e.id, "" end
+            local base, label = e.name:match("^(.-)%s+%-%s+(.+)$")
+            if not base then base, label = e.name, suffix end
+            local g = byKey[key]
+            if not g then
+                g = { key = key, name = base, tiers = {} }
+                byKey[key] = g
+                list[#list + 1] = g
+            end
+            g.tiers[#g.tiers + 1] = { suffix = suffix, label = label, entry = e }
+        end
+    end
+    -- Cheapest tier first: the default when nothing is chosen.
+    for _, g in ipairs(list) do
+        table.sort(g.tiers, function(a, b) return a.entry.price < b.entry.price end)
+    end
+    return list
+end
+
+local function supply_tier(g)
+    local want = settings.supplyTier[g.key]
+    for _, t in ipairs(g.tiers) do if t.suffix == want then return t end end
+    return g.tiers[1]
+end
+
+-------------------------------------------------------------------------------
 -- purchase jobs (spread over several ticks so big orders don't stall the game)
 
 local job = nil
@@ -691,7 +754,7 @@ end
 -- purchase shows in the game's transaction history. (S_TransactionData's
 -- field names are Blueprint-mangled, so they are looked up by prefix.)
 local txLogged = false
-local function spend_as_transaction(eco, amount)
+local function spend_as_transaction(eco, amount, ledger)
     local fn = resolve(path_of(eco:GetClass()) .. ":SpendMoneyAsTransaction")
     if not fn then return false, "no SpendMoneyAsTransaction" end
     local param = find_prop(fn, "TransactionData")
@@ -702,7 +765,7 @@ local function spend_as_transaction(eco, amount)
     local data = {}
     data[fAmount:GetFName():ToString()] = amount
     -- The bank app's ledger line: says where the purchase came from.
-    data[fName:GetFName():ToString()] = FText("Buying items: Parts Manager")
+    data[fName:GetFName():ToString()] = FText(ledger or "Buying items: Parts Manager")
     -- Date: S_GameTime { Time, Day }. The bank app shows the day ("Wednesday
     -- 94"), which is the economy's DayCounter; the time of day is left at 0.
     if fDate then
@@ -725,10 +788,10 @@ end
 
 -- Charge the player; falls back to a plain SpendMoney (no transaction record)
 -- if the transaction call didn't take effect.
-local function charge(eco, amount)
+local function charge(eco, amount, ledger)
     if amount <= 0 then return true end
     local before = get_money(eco)
-    spend_as_transaction(eco, amount)
+    spend_as_transaction(eco, amount, ledger)
     local after = get_money(eco)
     -- Money went down = paid (whatever the call reported); never charge twice.
     if before and after and after < before then return true end
@@ -748,7 +811,7 @@ end
 local function start_job(items, label)
     if job then return false, "A purchase is already running." end
     local eco, storage = get_economy(), get_storage()
-    if not catalog or not eco or not storage then return false, "Not available yet - wait until your save has finished loading." end
+    if not catalog or not eco or not storage then return false, "Not ready yet: wait for your save to finish loading." end
     local queue, total, count = {}, 0, 0
     for _, it in ipairs(items) do
         if not it.entry.avail then return false, it.entry.name .. " is locked. " .. it.entry.reason end
@@ -763,10 +826,10 @@ local function start_job(items, label)
     if money < total then return false, "Not enough money: need " .. money_text(total) .. ", have " .. money_text(money) .. "." end
     local free = get_free_space(storage)
     if free and free < count then
-        return false, string.format("Not enough storage space: %s part(s) to add, %s free.", num_text(count), num_text(free))
+        return false, string.format("Not enough storage space: %s item(s) to add, %s free.", num_text(count), num_text(free))
     end
     job = { label = label, queue = queue, added = 0, cost = 0, total = count }
-    set_status(string.format("%s: buying %s part(s)...", label, num_text(count)), true)
+    set_status(string.format("%s: buying %s item(s)...", label, num_text(count)), true)
     return true
 end
 
@@ -774,14 +837,23 @@ local function finish_job(full)
     local eco = get_economy()
     local paid = eco and charge(eco, job.cost)
     -- Fuses are bought in packs of FUSES_PER_PACK: say so, not "parts".
-    local packs = job.fusePacks or 0
-    local what = num_text(job.added - packs) .. " part(s)"
+    local packs, supplies = job.fusePacks or 0, job.supplies or 0
+    local parts = job.added - packs - supplies
+    local bits = {}
+    if parts > 0 then bits[#bits + 1] = num_text(parts) .. " part(s)" end
     if packs > 0 then
-        what = (job.added - packs > 0 and (what .. " and ") or "")
-            .. string.format("%s fuse pack(s) (%s fuses)", num_text(packs), num_text(packs * FUSES_PER_PACK))
+        bits[#bits + 1] = string.format("%s fuse pack(s) (%s fuses)", num_text(packs), num_text(packs * FUSES_PER_PACK))
     end
+    -- One supply bought on its own reads "added 10 to storage" ("10 workshop
+    -- supplies" reads like ten different ones). Mixed buys keep the noun.
+    if supplies > 0 then
+        bits[#bits + 1] = (parts == 0 and packs == 0 and job.oneSupply) and num_text(supplies) or (num_text(supplies) .. " workshop supplies")
+    end
+    local what = #bits > 0 and table.concat(bits, " and ") or "nothing"
     local msg = string.format("%s: added %s to storage for %s.", job.label, what, money_text(job.cost))
-    if not paid then msg = msg .. " (Money could not be charged -- see UE4SS.log.)" end
+    -- The Report a Bug pointer only when a failed add isn't already giving it:
+    -- both together on a long mixed-buy line overflow STATUS's two lines.
+    if not paid then msg = msg .. (job.error and " Couldn't charge you for it." or " Couldn't charge you for it. Report a Bug sends us the details.") end
     if full then msg = msg .. " Storage is full." end
     if job.error then msg = msg .. " " .. job.error end
     set_status(msg, not full and not job.error and paid)
@@ -803,7 +875,7 @@ local function job_step()
             local ok, err = pcall(function() storage:AddItemByClass(cls, false, out, out2) end)
             if not ok then
                 log("AddItemByClass failed for " .. q.entry.id .. ": " .. tostring(err))
-                job.error = "Could not add " .. q.entry.name .. " to storage (see UE4SS.log)."
+                job.error = "Couldn't add " .. q.entry.name .. " to storage. Report a Bug sends us the details."
                 finish_job(false)
                 return
             end
@@ -815,6 +887,7 @@ local function job_step()
             -- Fuse packs by ProductID ("Fusepack<amps>", as fuse_stock finds them):
             -- the old group test counted none of them in the 1.0 run ("added 75 part(s)").
             if (q.entry.id or ""):match("^Fusepack%d+$") then job.fusePacks = (job.fusePacks or 0) + 1 end
+            if q.entry.group == "supply" then job.supplies = (job.supplies or 0) + 1 end
             job.cost = job.cost + q.entry.price
             q.left = q.left - 1
             if q.left <= 0 then table.remove(job.queue, 1) end
@@ -869,8 +942,12 @@ end
 -- their state, but nothing is bought until the player clicks any Auto button.
 local autoPaused = false
 
+-- Fuel Delivery's functions live in this table (filled in further down, with
+-- the hub code); declared here so auto-stock can call Auto Fuel.
+local Hub = {}
+
 local function any_auto_configured()
-    if settings.fuseOn then return true end
+    if settings.fuseOn or settings.supplyOn or settings.fuelOn then return true end
     for _, k in ipairs(AUTO_KITS) do if settings.autoOn[k] then return true end end
     return false
 end
@@ -927,8 +1004,8 @@ local function watch_world()
             autoPaused = true
             set_status("Auto-stock paused: a save was loaded. Click any Auto button to resume it for this save.", false)
             if queue_alert then
-                queue_alert("AUTO-STOCK PAUSED", "A save was loaded, so auto-stock is paused in case this is a different career. "
-                    .. "To resume it, open Parts Manager on your tablet or computer and click any Auto button.")
+                queue_alert("AUTO-STOCK PAUSED", "A save was loaded, so auto-stock is paused in case it's a different career. "
+                    .. "To resume, open Parts Manager and click any Auto button.")
             end
         end
         return nil
@@ -964,12 +1041,14 @@ local function auto_stock()
             autoPaused = true
             set_status("New career: auto-stock is paused for this save. Click any Auto button to start it.", false)
             if queue_alert then
-                queue_alert("NEW CAREER: AUTO-STOCK PAUSED", "This looks like a brand-new career, so Parts Manager hasn't bought anything. "
-                    .. "When you want auto-stock to start, open Parts Manager on your tablet or computer and click any Auto button.")
+                queue_alert("NEW CAREER: AUTO-STOCK PAUSED", "This looks like a brand-new career, so nothing has been bought. "
+                    .. "To start auto-stock, open Parts Manager and click any Auto button.")
             end
             return
         end
     end
+    -- Auto Fuel first: it isn't a storage purchase, so it runs on its own.
+    if settings.fuelOn then Hub.auto_fuel() end
     -- Total wanted per product across every switched-on, unlocked kit. Body
     -- parts and consumables (when "Body & Consumables" is on) are needed by
     -- every car whatever its grade, so their targets add up across kits.
@@ -1001,6 +1080,14 @@ local function auto_stock()
             end
         end
     end
+    -- Workshop supplies: the chosen tier of each, topped up to the target.
+    if settings.supplyOn and settings.supplyTarget > 0 then
+        for _, g in ipairs(supply_groups()) do
+            local t = supply_tier(g)
+            local short = settings.supplyTarget - usable(counts, t.entry)
+            if short > 0 and t.entry.avail then items[#items + 1] = { entry = t.entry, qty = short } end
+        end
+    end
     if #items == 0 then lastAutoWarning = nil lastAutoKind = nil return end
     -- Money floor: never let auto-stock take the balance below it.
     if settings.moneyFloor > 0 then
@@ -1018,6 +1105,276 @@ local function auto_stock()
     local ok, err = start_job(items, "Auto-stock")
     -- Not enough money / space: stay on, warn once, and try again next check.
     if ok then lastAutoKind = nil else auto_warn("Auto-stock can't buy. " .. err, err) end
+end
+
+-------------------------------------------------------------------------------
+-- Gas Pump Hub: refill the dealership's three underground tanks at the gas
+-- station's price, skipping the drive with the mobile tank (feature request
+-- #11; spirit-of-the-game ruling: needs a mobile tank you own, standard fuel
+-- price, no fee). Levels are in gallons (MaxFuel 265 at the hub's first level).
+-- One table (declared above auto-stock), not top-level locals: the file is at
+-- Lua's 200-local limit.
+
+Hub.HUB_SETTLE_SECONDS = 60     -- a hub loads its save's levels late: wait this long
+Hub.FUEL_PRICE_FALLBACK = 3.07  -- Regular on build 25989974, if no pump widget is loaded
+Hub.PUMP_WIDGET_CLASS = "/Game/CarDealerSim/Mechanics/RepairZone/Refuel/WBP_FuelWidget.WBP_FuelWidget_C"
+Hub.HUB_STEPS = { 10, 25, 50, 100 }   -- percent of a tank; 100 = fill
+Hub.hubSeen = { path = nil, since = 0 }
+Hub.hubBase = nil               -- SetFuel/GetFuel index of Tank #1 (0 or 1), learned on first write
+Hub.tankerOwned = {}            -- world (storage path) -> true once an owned mobile tank was seen
+Hub.priceLogged = nil
+
+function Hub.get_hub() return first_live("BP_UndergroundTankSystem_C") end
+
+-- The pump panels hold the price as FuelPrice; their class defaults carry it
+-- too, so no panel needs to be open. Falls back to the known price.
+function Hub.fuel_price()
+    for _, cls in ipairs({ "WBP_FuelDispenserWidget_C", "WBP_FuelWidget_C" }) do
+        local ok, all = pcall(function() return FindAllOf(cls) end)
+        for _, o in ipairs((ok and all) or {}) do
+            local v = nil
+            if valid(o) then pcall(function() v = tonumber(o.FuelPrice) end) end
+            if v and v > 0 then
+                if Hub.priceLogged ~= v then
+                    -- The class path, so a later build can load it without a pump visit.
+                    local cp = "?"
+                    pcall(function() cp = path_of(o:GetClass()) or "?" end)
+                    log(string.format("fuel price %.2f/gal (from %s, class %s)", v, cls, cp))
+                    Hub.priceLogged = v
+                end
+                return v, true
+            end
+        end
+    end
+    -- No pump panel made yet this session: load the car pump panel's class
+    -- (path logged on build 25989974) and read its default. Once per session,
+    -- only in the game world (not the menu), and only if it gives a price.
+    if not Hub.classTried then
+        local pc = first_live("BP_PlayerController_C")
+        local p = pc and path_of(pc) or ""
+        if p ~= "" and not p:find("MenuMap", 1, true) and type(LoadAsset) == "function" then
+            Hub.classTried = true
+            local cls = nil
+            pcall(function() cls = LoadAsset(Hub.PUMP_WIDGET_CLASS) end)
+            local cdo = nil
+            if valid(cls) then pcall(function() cdo = cls:GetCDO() end) end
+            local v = nil
+            if valid(cdo) then pcall(function() v = tonumber(cdo.FuelPrice) end) end
+            log("pump widget class default: " .. (v and string.format("FuelPrice %.2f", v) or "not readable"))
+            if v and v > 0 then Hub.classPrice = v end
+        end
+    end
+    if Hub.classPrice then return Hub.classPrice, true end
+    if Hub.priceLogged ~= false then log("fuel price: no pump widget loaded; using " .. Hub.FUEL_PRICE_FALLBACK) Hub.priceLogged = false end
+    return Hub.FUEL_PRICE_FALLBACK, false
+end
+
+function Hub.tanker_owned()
+    local w = statusWorld or "?"
+    if Hub.tankerOwned[w] then return true end
+    local ok, all = pcall(function() return FindAllOf("BP_MobileTank_C") end)
+    for _, o in ipairs((ok and all) or {}) do
+        if valid(o) and not (path_of(o) or ""):find("Default__", 1, true) then
+            local okO, owned = pcall(function() return o.PlayerOwned end)
+            if okO and owned == true then Hub.tankerOwned[w] = true return true end
+        end
+    end
+    return false
+end
+
+-- The Gas Pump Hub's upgrade level (0-3), from the game's own "at least
+-- level N" check on its upgrade type. The game unlocks one underground tank
+-- per level, but the hub reports a capacity for all three even when they're
+-- locked, so the level decides which tanks are real. nil if it can't be read
+-- (then no tank is offered).
+Hub.HUB_UPGRADE_TYPE = 5   -- the Gas Pump Hub's upgrade type (6 is the Underground Garage)
+function Hub.hub_level()
+    -- Asked about once a second (hub watch, open page): re-read every 5 s.
+    if Hub.levelAt and os.clock() - Hub.levelAt < 5 then return Hub.levelCached end
+    -- Every exit caches what it returns (an early return once cached nil for
+    -- 5 s and made the tab flicker locked).
+    local function done(v) Hub.levelAt, Hub.levelCached = os.clock(), v return v end
+    local us = first_live("BP_UpgradeSystem_C")
+    if not us then return done(nil) end
+    local level = 0
+    for l = 1, 3 do
+        local out = {}
+        local ok = pcall(function() us:Condition_UpgradeLevel(Hub.HUB_UPGRADE_TYPE, l, out) end)
+        if not ok then return done(level > 0 and level or nil) end
+        if out.Result ~= true then break end
+        level = l
+    end
+    if Hub.levelLogged ~= level then log("gas pump hub level " .. level) Hub.levelLogged = level end
+    return done(level)
+end
+
+-- Each tank's fuel and capacity; a tank above the hub's level is locked
+-- (capacity 0 here, so nothing is offered, charged or counted for it).
+function Hub.tank_levels(hub)
+    local t = {}
+    local level = Hub.hub_level() or 0
+    for i = 1, 3 do
+        local f, m = nil, nil
+        pcall(function() f = tonumber(hub["Fuel" .. i]) end)
+        pcall(function() m = tonumber(hub["MaxFuel" .. i]) end)
+        local locked = i > level
+        t[i] = { fuel = locked and 0 or (f or 0), max = locked and 0 or (m or 0), locked = locked }
+    end
+    return t, level
+end
+
+-- Whether the hub can be refilled now; nil + the reason if not.
+function Hub.hub_state()
+    local hub = Hub.get_hub()
+    if not hub then
+        Hub.hubSeen.path = nil
+        return nil, "Your Gas Pump Hub isn't loaded: go back to your dealership."
+    end
+    local p = path_of(hub)
+    if p ~= Hub.hubSeen.path then Hub.hubSeen.path, Hub.hubSeen.since = p, os.clock() end
+    local level = Hub.hub_level()
+    if not level or level < 1 then
+        return nil, "Needs the Gas Pump Hub upgrade (Upgrades app on your tablet)."
+    end
+    if not Hub.tanker_owned() then
+        return nil, "Needs your own mobile fuel tank (sold at the gas station)."
+    end
+    if os.clock() - Hub.hubSeen.since < Hub.HUB_SETTLE_SECONDS then
+        return nil, "Reading your tank levels (about a minute)..."
+    end
+    return hub
+end
+
+function Hub.floor_cents(v) return math.floor(v * 100 + 1e-6) / 100 end
+function Hub.cents_text(v)
+    local c = math.floor(v * 100 + 0.5)
+    return "$" .. num_text(math.floor(c / 100)) .. string.format(".%02d", c % 100)
+end
+
+-- Gallons to add to each tank for a step: pct of capacity, never past full.
+function Hub.hub_adds(levels, tanks, pct)
+    local adds, total = {}, 0
+    for _, i in ipairs(tanks) do
+        local l = levels[i]
+        local a = math.max(0, math.min(l.max * pct / 100, l.max - l.fuel))
+        if a < 0.05 then a = 0 end
+        adds[i] = a
+        total = total + a
+    end
+    return adds, total
+end
+
+-- Set one tank through the game's own SetFuel (it updates the gauges), then
+-- check which tank actually moved: the first write learns whether the game
+-- numbers them from 0 or 1, and puts a wrongly moved tank back.
+function Hub.write_tank(hub, tank, value)
+    local function read(i) local v = nil pcall(function() v = tonumber(hub["Fuel" .. i]) end) return v or 0 end
+    local before = { read(1), read(2), read(3) }
+    -- Measured on build 25989974: the game numbers them from 0. Still checked,
+    -- in case an update changes it.
+    local tries = Hub.hubBase and { Hub.hubBase } or { 0, 1 }
+    for _, base in ipairs(tries) do
+        local idx = base + tank - 1
+        pcall(function() hub:SetFuel(value, idx) end)
+        local moved = nil
+        for j = 1, 3 do if math.abs(read(j) - before[j]) > 0.001 then moved = j end end
+        if moved == tank then
+            if Hub.hubBase ~= base then Hub.hubBase = base log("hub tanks are numbered from " .. base) end
+            return true, before[tank], read(tank)
+        end
+        if moved then
+            pcall(function() hub:SetFuel(before[moved], idx) end)
+            log(string.format("SetFuel(%d) moved tank %d, not %d; put it back", idx, moved, tank))
+        end
+    end
+    -- Fallback: the game's function didn't move it. Write the level directly.
+    pcall(function() hub["Fuel" .. tank] = value end)
+    local now = read(tank)
+    if math.abs(now - before[tank]) > 0.001 then
+        log("SetFuel had no effect; wrote Fuel" .. tank .. " directly (gauge updates on the next load)")
+        return true, before[tank], now
+    end
+    return false, before[tank], now
+end
+
+-- Auto Fuel: when the three tanks TOGETHER are below 10% of
+-- their combined capacity, every unlocked tank is filled to full; never topped up, so
+-- it doesn't refill after every car a worker fuels. Waits 3 minutes
+-- after the hub loads (its save levels arrive late and read 0 first: a manual
+-- fill waits 1, this one spends unattended), and obeys Keep Balance Above.
+Hub.AUTO_FUEL_AT = 0.10
+Hub.AUTO_FUEL_SETTLE = 180
+function Hub.auto_fuel()
+    local hub = Hub.hub_state()
+    if not hub or os.clock() - Hub.hubSeen.since < Hub.AUTO_FUEL_SETTLE then return end
+    local levels = Hub.tank_levels(hub)
+    local f, m = 0, 0
+    for i = 1, 3 do f, m = f + levels[i].fuel, m + levels[i].max end
+    -- Strictly below 10%. Tanks with no capacity
+    -- count toward neither total, and hub_adds gives them nothing to fill.
+    if m <= 0 or f >= m * Hub.AUTO_FUEL_AT then return end
+    local low = { 1, 2, 3 }
+    local price = Hub.fuel_price()
+    local _, gal = Hub.hub_adds(levels, low, 100)
+    local cost = Hub.floor_cents(gal * price)
+    local eco = get_economy()
+    local money = eco and get_money(eco) or 0
+    if settings.moneyFloor > 0 and money - cost < settings.moneyFloor then
+        local reason = string.format("Filling the tanks (%s) would take your balance below %s (Keep Balance Above).",
+            Hub.cents_text(cost), money_text(settings.moneyFloor))
+        auto_warn("Auto Fuel can't buy. " .. reason, reason)
+        return
+    end
+    if money < cost then
+        local reason = "Not enough money to fill the tanks: need " .. Hub.cents_text(cost) .. "."
+        auto_warn("Auto Fuel can't buy. " .. reason, reason)
+        return
+    end
+    Hub.hub_fill(low, 100, "Auto Fuel")
+end
+
+function Hub.hub_fill(tanks, pct, who)
+    local hub, why = Hub.hub_state()
+    if not hub then set_status(why, false) return end
+    local eco = get_economy()
+    if not eco then set_status("Not ready yet: wait for your save to finish loading.", false) return end
+    local price = Hub.fuel_price()
+    local levels = Hub.tank_levels(hub)
+    if #tanks == 1 and levels[tanks[1]].locked then
+        set_status("Tank #" .. tanks[1] .. " unlocks at Gas Pump Hub level " .. tanks[1] .. ".", false)
+        return
+    end
+    local adds, gal = Hub.hub_adds(levels, tanks, pct)
+    local _, fillGal = Hub.hub_adds(levels, tanks, 100)
+    if pct < 100 and gal > 0 and gal >= fillGal - 0.05 then
+        set_status(string.format("+%d%% would go past full: use Fill (%.1f gal).", pct, fillGal), false)
+        return
+    end
+    if gal <= 0 then set_status(#tanks > 1 and "All tanks are already full." or ("Tank #" .. tanks[1] .. " is already full."), false) return end
+    local cost = Hub.floor_cents(gal * price)
+    local money = get_money(eco) or 0
+    if money < cost then set_status("Not enough money: need " .. Hub.cents_text(cost) .. ", have " .. money_text(money) .. ".", false) status.staleOnMoney = true return end
+    local done, added = {}, 0
+    for _, i in ipairs(tanks) do
+        if adds[i] > 0 then
+            local ok, was, now = Hub.write_tank(hub, i, levels[i].fuel + adds[i])
+            if not ok then
+                for _, d in ipairs(done) do Hub.write_tank(hub, d.tank, d.was) end
+                set_status("Couldn't fill Tank #" .. i .. ". Nothing was charged. Report a Bug sends us the details.", false)
+                return
+            end
+            done[#done + 1] = { tank = i, was = was }
+            added = added + (now - was)
+        end
+    end
+    local paid = Hub.floor_cents(added * price)
+    if not charge(eco, paid, "Fuel delivery: Parts Manager") then
+        for _, d in ipairs(done) do Hub.write_tank(hub, d.tank, d.was) end
+        set_status("Couldn't charge you, so the fuel was taken back out. Report a Bug sends us the details.", false)
+        return
+    end
+    local which = #tanks > 1 and "your tanks" or ("Tank #" .. tanks[1])
+    set_status(string.format("%s: added %.1f gal to %s at %s/gal for %s.", who or "Fuel Delivery", added, which, Hub.cents_text(price), Hub.cents_text(paid)), true)
 end
 
 -------------------------------------------------------------------------------
@@ -1046,6 +1403,7 @@ local COLORS = {
     btnOff = { R = 0.16, G = 0.16, B = 0.17, A = 1.0 },
     btnDark = { R = 0.005, G = 0.04, B = 0.16, A = 1.0 },
     btnLocked = { R = 0.09, G = 0.09, B = 0.10, A = 1.0 },
+    btnFill = { R = 0.62, G = 0.05, B = 0.04, A = 1.0 },   -- Fuel Delivery's Fill button (red)
     -- part grades in the list
     tier = {
         Stock = { R = 0.92, G = 0.92, B = 0.92, A = 1.0 },
@@ -1178,6 +1536,7 @@ local function hw(h, name) return resolve(h.w[name]) end
 local LOGO_FILE = MOD_DIR .. "Assets\\logo.png"
 local LOGO_ASPECT = 1                   -- the PNG is square (256 x 256)
 local LOCK_FILE = MOD_DIR .. "Assets\\lock.png"   -- square padlock for locked kit tabs
+local HELP_FILE = MOD_DIR .. "Assets\\help.png"   -- outlined "?" in the card titles' blue
 local logoLogged = false
 
 -- A square picture from this mod's folder (like the logo); nil if missing.
@@ -1230,7 +1589,7 @@ end
 
 -- Column layout shared by the list header and its rows: text columns fill
 -- by weight; the per-part buy controls follow at a fixed width.
-local COLUMNS = { { "Part", 2.7 }, { "Price", 0.7 }, { "Per Car", 0.78 }, { "Ready", 0.62 }, { "Needs Repair", 1.2 }, { "Cars' Worth", 1.08 }, { "Carried*", 0.85 } }
+local COLUMNS = { { "Part", 2.7 }, { "Price", 0.7 }, { "Per Car", 0.78 }, { "Ready", 0.62 }, { "Needs Repair", 1.2 }, { "Cars' Worth", 1.08 }, { "Carried", 0.85 } }
 -- Matches a row's buy controls (- N + Add: about 332) plus the list's scroll bar,
 -- so the header columns line up with the rows below them.
 local BUY_CONTROLS_WIDTH = 365
@@ -1290,29 +1649,76 @@ local function rebuild_rows(h)
     h.rowsKey = settings.kit .. (settings.extras and "+" or "-")
 end
 
+-- Workshop supplies list: one row per supply (its chosen tier), same look as
+-- the parts list. Columns, then the tier and buy buttons at a fixed width.
+-- (No Tier column: the Tier button in each row names the tier.)
+local SUPPLY_COLUMNS = { { "Supply", 3.0 }, { "Price", 0.8 }, { "In Storage", 1.0 }, { "Carried", 0.9 } }
+local SUPPLY_CONTROLS_WIDTH = 450
+
+local function rebuild_supply_rows(h, groups)
+    local list = hw(h, "slist")
+    local host = resolve(h.hostPath)
+    if not list or not host then return end
+    pcall(function() list:ClearChildren() end)
+    for name, b in pairs(buttons) do
+        if b.host == h.hostPath and b.action:match("^srow") then buttons[name] = nil end
+    end
+    h.srows = {}
+    local outer = list:GetOuter()
+    for i, g in ipairs(groups) do
+        local bg = make_border(outer, (i % 2 == 1) and COLORS.row or COLORS.rowAlt, 14, 6, 10, 6)
+        local row = new_widget("HorizontalBox", outer)
+        bg:SetContent(row)
+        local cells = {}
+        for c, spec in ipairs(SUPPLY_COLUMNS) do
+            local color = (c == 1 and COLORS.white) or (c == 2 and COLORS.price) or COLORS.dim
+            local t = make_text(outer, "", c == 1 and 20 or 18, color)
+            local slot = row:AddChildToHorizontalBox(t)
+            fill(slot, spec[2])
+            pad(slot, 0, 0, 6, 0)
+            valign(slot, 2)
+            cells[c] = path_of(t)
+        end
+        local r = { key = g.key, cells = cells, b = {} }
+        local function rbutton(name, label, width, action, color)
+            local ov, rec = make_button(host, h.hostPath, outer, label, width, 38, action, 18, color)
+            local slot = row:AddChildToHorizontalBox(ov)
+            pad(slot, 0, 0, 8, 0)
+            valign(slot, 2)
+            r.b[name] = rec
+        end
+        rbutton("tier", "Tier", 180, "srowtier:" .. g.key, COLORS.btnOff)
+        rbutton("add", "Add", 240, "srowadd:" .. g.key, COLORS.btn)
+        local rs = list:AddChild(bg)
+        pad(rs, 0, 0, 0, 2)
+        h.srows[#h.srows + 1] = r
+    end
+    -- Rebuilt when the set of supplies or tiers changes (a game update).
+    local key = {}
+    for _, g in ipairs(groups) do key[#key + 1] = g.key .. "/" .. #g.tiers end
+    h.supplyKey = table.concat(key, ",")
+end
+
 -- Help page: { heading or nil, paragraph }. Headings are drawn in the section blue.
 local HELP_SECTIONS = {
-    { "HOW TO USE", "Everything is bought at normal store prices and goes straight into your warehouse storage. No delivery truck, no waiting." },
-    { "OVERVIEW", "Your money, fame level, reputation level and free storage, plus how many complete cars the parts in storage can build for each kit you have unlocked." },
-    { "BUY COMPLETE CARS", "Pick Stock, Sport or Race. Sport and Race need the Up 2 You DLC and unlock once every part in them is unlocked by fame. Until then their tabs are dimmed with a padlock, and clicking one shows what's missing in STATUS. "
-        .. "Turn on Body & Consumables to add a windshield, plate repair kit, engine oil, coolant and brake fluid per car. "
-        .. "Set the number of cars with -10 / -1 / +1 / +10 and press Buy. You get that many full sets, whatever is already in storage." },
-    { "PARTS", "Every part in the selected kit: its price, how many one car needs, how many in storage show under Ready (100%) and how many under Needs Repair, "
-        .. "and how many cars that covers (red = none, green = enough for your chosen number of cars). "
-        .. "To buy one part on its own, set a car count with - / + and press Add: brake calipers for 2 cars = 8." },
-    { "AUTO-STOCK", "Switch on Auto Stock, Auto Sport and/or Auto Race and set how many complete cars of each to keep in storage. "
-        .. "Every 30 seconds, once a loaded save has settled, it buys whatever is missing. With Body & Consumables on, each kit's cars "
-        .. "get their own windshield, plate kit and fluids, so the targets add up across kits: 5 Stock + 5 Sport = fluids for 10 cars. "
-        .. "Auto Fuses keeps N fuses of every size in storage (loose fuses plus 3 per unopened pack) and buys packs of 3 as needed. "
-        .. "If money or storage runs short, auto-stock can't buy and tries again at the next check, 30 seconds later. You don't need to click anything. 'Count Parts Needing Repair' decides whether worn parts count as stock. "
-        .. "On: they count, so nothing is bought to replace them. Off: only 100% parts count, and worn ones are replaced with new ones. "
-        .. "The same switch applies to the complete-car counts." },
-    { nil, "Keep Balance Above: auto-stock never buys if it would take your money below this amount. Buying by hand is not limited. "
-        .. "If you play more than one career, set pause_auto_on_load=1 in settings.txt: auto-stock then pauses after every save load, "
-        .. "with an on-screen notice, and any Auto button resumes it. A brand-new career always starts with auto-stock paused, "
-        .. "so it never spends a new player's money without being asked." },
-    { "CARRIED*", "Parts in your inventory and car trunks, shown for reference only. The complete-car counts and auto-stock use your warehouse storage alone." },
-    { nil, "How many of each body part and consumable go with one car can be changed in settings.txt in the mod folder (set one to 0 to skip it)." },
+    { "HOW TO USE", "Parts are bought at store prices and go straight into your warehouse. No delivery truck, no waiting. "
+        .. "The tabs at the top switch between the parts kits, Workshop and Fuel Delivery. Hover a ? or an Auto button for a short explanation." },
+    { "OVERVIEW", "Your money, levels, free storage, and how many complete cars your stored parts can build." },
+    { "BUY COMPLETE CARS", "Pick a kit. Sport and Race need the Up 2 You DLC and unlock with fame; a locked tab shows a padlock, and clicking it says why. "
+        .. "Body & Consumables adds a windshield, plate repair kit and fluids per car. Set the number of cars and press Buy: you get that many full sets, whatever is already in storage." },
+    { "PARTS", "Every part in the kit, what's in storage, and how many cars it covers. Add buys one part for N cars: brake calipers for 2 cars = 8." },
+    { "AUTO-STOCK", "Every 30 seconds, once a save has settled, auto-stock buys whatever is below its target. "
+        .. "Auto Stock, Sport and Race keep N complete cars per kit; with Body & Consumables on, each car gets its own fluids, so 5 Stock + 5 Sport = fluids for 10. "
+        .. "Auto Fuses keeps N of every fuse size (packs of 3). Auto Supplies keeps N of every workshop supply. "
+        .. "Auto Fuel fills every unlocked hub tank when together they drop below 10%. Count Worn Parts decides whether Needs Repair parts count as stock. "
+        .. "Short on money or space? It tries again at the next check." },
+    { nil, "Keep Balance Above: auto-stock never spends below it; buying by hand isn't limited. A brand-new career starts with auto-stock paused. "
+        .. "Playing several careers? Set pause_auto_on_load=1 in settings.txt to pause after every load; any Auto button resumes." },
+    { "WORKSHOP SUPPLIES", "Car wash and body shop supplies at store prices. Add buys 10. The Tier button switches tiers once the game has more than Basic." },
+    { "FUEL DELIVERY", "Your Gas Pump Hub's tanks: one unlocks per hub level. +10%, +25% and +50% add that much of a tank, Fill tops it up, and the All Tanks row does every unlocked tank. "
+        .. "You pay the pump's price per gallon and nothing more. Needs your own mobile fuel tank, with your dealership loaded. Levels take a minute to read after a save loads." },
+    { "CARRIED", "In your inventory and car trunks, for reference only. Ready, Needs Repair, Cars' Worth and auto-stock count only your warehouse." },
+    { nil, "Per-car amounts for body parts and consumables are in settings.txt in the mod folder (0 skips one)." },
 }
 
 local function build_panel(h, host, hostPath)
@@ -1359,14 +1765,39 @@ local function build_panel(h, host, hostPath)
 
     -- A card: titled, described section with its own background.
     -- Every card except help is listed in h.cards, so Help can swap them out.
-    h.cards = {}
+    h.cards, h.wcards = {}, {}
+    h.pageCards = h.cards
+    h.tips = {}
+    -- The help icon: a small outlined "?" in the titles' blue,
+    -- not a red eye-catcher. It is still the game's button widget (that gives
+    -- the rounded tooltip and the click), with the card's colour as its
+    -- background so only Assets\help.png shows; a plain "?" if the PNG is missing.
+    local function help_button(box, key, text)
+        h.tips[key] = text
+        local icon = make_icon(host, tree, HELP_FILE, 24)
+        local ov, rec = make_button(host, hostPath, tree, icon and "" or "?", 26, 26, "tip:" .. key, 16,
+            icon and COLORS.card or COLORS.btnOff)
+        if icon then
+            local sl = ov:AddChildToOverlay(icon)
+            halign(sl, 2)
+            valign(sl, 2)
+        end
+        local b = resolve(rec.b)
+        if b then
+            pcall(function() b.Roundness = 13 b:UpdateVisual() end)
+            pcall(function() b:SetToolTipText(FText(text)) end)
+        end
+        local sl = box:AddChildToHorizontalBox(ov)
+        pad(sl, 0, 0, 12, 0)
+        valign(sl, 2)
+    end
     local function card(name, titleText, desc, grow)
         local bd = make_border(tree, COLORS.card, 22, 8, 22, 8)
         local box = new_widget("VerticalBox", tree)
         bd:SetContent(box)
         local slot = body:AddChildToVerticalBox(bd)
         pad(slot, 0, 0, 0, 6)
-        if name ~= "helpCard" then h.cards[#h.cards + 1] = path_of(bd) end
+        if name ~= "helpCard" then h.pageCards[#h.pageCards + 1] = path_of(bd) end
         if grow then fill(slot, 1) end
         if titleText then
             local hdr = new_widget("HorizontalBox", tree)
@@ -1374,12 +1805,11 @@ local function build_panel(h, host, hostPath)
             local ts = hdr:AddChildToHorizontalBox(tt)
             pad(ts, 0, 0, 16, 0)
             valign(ts, 3)
-            if desc then
-                local dt = make_text(tree, desc, 17, COLORS.dim)
-                local ds = hdr:AddChildToHorizontalBox(dt)
-                fill(ds, 1)
-                valign(ds, 3)
-            end
+            -- The description is a "?" icon beside the title: its
+            -- tooltip has the game's rounded style, like the Auto buttons'
+            -- (a plain text tooltip gets UMG's square box), and a click puts
+            -- the same text in STATUS.
+            if desc then help_button(hdr, titleText, desc) end
             pad(box:AddChildToVerticalBox(hdr), 0, 0, 0, 4)
         end
         if name then h.w[name] = path_of(bd) end
@@ -1390,6 +1820,33 @@ local function build_panel(h, host, hostPath)
         pad(slot, 0, t or 0, 0, b or 0)
         return slot
     end
+
+    -- The page tabs: one slim bar above every page (parts kits, Workshop,
+    -- Fuel Delivery). Locked tabs (Sport / Race by fame, Gas Pump Hub without a mobile tank)
+    -- are dimmed with a padlock; refresh_panel styles them.
+    local function tabs_row(box, prefix)
+        local row = new_widget("HorizontalBox", tree)
+        for _, k in ipairs({ "Stock", "Sport", "Race" }) do
+            add_hbutton(h, host, row, prefix .. k, k, 150, "kit:" .. k, COLORS.btnOff, 24)
+        end
+        add_hbutton(h, host, row, prefix .. "Workshop", "Workshop", 190, "workshop", COLORS.btnOff, 24)
+        add_hbutton(h, host, row, prefix .. "Hub", "Fuel Delivery", 240, "gashub", COLORS.btnOff, 24)
+        for _, k in ipairs({ "Sport", "Race", "Hub" }) do
+            local rec = h.b[prefix .. k]
+            local icon = rec and make_icon(host, tree, LOCK_FILE, 20)
+            local r = icon and resolve(rec.row)
+            if r then
+                local sl = r:AddChildToHorizontalBox(icon)
+                pad(sl, 8, 0, 0, 0)
+                valign(sl, 2)
+                rec.lock = path_of(icon)
+            end
+        end
+        if box then add(box, row, 0, 6) end
+        return row
+    end
+
+    tabs_row(body, "kit")
 
     -- help: a page of its own, shown instead of the other cards
     local help = card("helpCard", nil, nil, true)   -- its title scrolls with the text
@@ -1407,51 +1864,23 @@ local function build_panel(h, host, hostPath)
     end
     fill(help:AddChildToVerticalBox(helpScroll), 1)
     pcall(function() resolve(h.w.helpCard):SetVisibility(1) end)
-    h.helpOpen = false
+    h.page = "main"
 
     -- overview
-    local ov = card(nil, "OVERVIEW", "Current Player Status")
+    local ov = card(nil, "OVERVIEW", "Your money, levels, free storage, and how many complete cars your stored parts can build.")
     local ovRow = new_widget("HorizontalBox", tree)
     local info = make_text(tree, "", 20, COLORS.dim)
     h.w.info = path_of(info)
     local is = ovRow:AddChildToHorizontalBox(info)
     valign(is, 2)
-    local canBuild = make_text(tree, "", 22, COLORS.white)
-    h.w.canbuild = path_of(canBuild)
-    local cbs = ovRow:AddChildToHorizontalBox(canBuild)
-    fill(cbs, 1)
-    pad(cbs, 24, 0, 0, 0)   -- always a gap after the overview line, however long the numbers get
-    halign(cbs, 3)
-    valign(cbs, 2)
     add(ov, ovRow)
 
     -- buy complete cars
-    local cc = card(nil, "BUY COMPLETE CARS", "Pick a kit and a number of cars, and buy every part of that kit for them in one go.")
-    local kits = new_widget("HorizontalBox", tree)
-    add_hbutton(h, host, kits, "kitStock", "Stock", 150, "kit:Stock", COLORS.btnOff, 24)
-    add_hbutton(h, host, kits, "kitSport", "Sport", 150, "kit:Sport", COLORS.btnOff, 24)
-    add_hbutton(h, host, kits, "kitRace", "Race", 150, "kit:Race", COLORS.btnOff, 24)
-    -- Padlock after the Sport / Race names, shown while that kit is locked.
-    for _, k in ipairs({ "Sport", "Race" }) do
-        local rec = h.b["kit" .. k]
-        local icon = rec and make_icon(host, tree, LOCK_FILE, 20)
-        local row = icon and resolve(rec.row)
-        if row then
-            local s = row:AddChildToHorizontalBox(icon)
-            pad(s, 8, 0, 0, 0)
-            valign(s, 2)
-            rec.lock = path_of(icon)
-        end
-    end
-    add_hbutton(h, host, kits, "extras", "Body & Consumables: off", 390, "extras", COLORS.btnOff, 20)
-    local locked = make_text(tree, "", 18, COLORS.dim)
-    h.w.locked = path_of(locked)
-    local ls = kits:AddChildToHorizontalBox(locked)
-    pad(ls, 8, 0, 0, 0)
-    valign(ls, 2)
-    add(cc, kits, 0, 6)
-
+    local cc = card(nil, "BUY COMPLETE CARS", "Every part of a kit for N cars, in one go.")
+    -- One row: Body & Consumables, the car count, the price and Buy (the
+    -- tabs moved to the bar above, to give the parts table its rows back).
     local brow = new_widget("HorizontalBox", tree)
+    add_hbutton(h, host, brow, "extras", "Body & Consumables: off", 390, "extras", COLORS.btnOff, 20)
     local blabel = make_text(tree, "Cars", 24, COLORS.white)
     local bls = brow:AddChildToHorizontalBox(blabel)
     pad(bls, 0, 0, 16, 0)
@@ -1481,7 +1910,9 @@ local function build_panel(h, host, hostPath)
     add(cc, brow)
 
     -- parts list
-    local pl = card(nil, "PARTS", "Buy any part for N cars (brake calipers for 2 cars = 8). *Carried: inventory and trunks, reference only.", true)
+    -- Kept to two STATUS lines (the bar is two lines tall).
+    local pl = card(nil, "PARTS", "Ready: stored at 100%. Needs Repair: stored below 100%. Cars' Worth: cars covered. "
+        .. "Carried: inventory and trunks, for reference. Add buys one part for N cars.", true)
     local headBg = make_border(tree, COLORS.header, 14, 6, 10, 6)
     local head = new_widget("HorizontalBox", tree)
     headBg:SetContent(head)
@@ -1499,37 +1930,69 @@ local function build_panel(h, host, hostPath)
     h.w.list = path_of(list)
     fill(pl:AddChildToVerticalBox(list), 1)
 
-    -- auto-stock + status
-    local au = card(nil, "AUTO-STOCK", "Keeps N complete cars of each switched-on kit in storage. Checks every 30 seconds.")
-    local autoRow = new_widget("HorizontalBox", tree)
-    -- One group per kit: [Auto Stock: on] [-] N [+]. Sport / Race groups are
-    -- hidden until unlocked.
-    for _, k in ipairs(AUTO_KITS) do
-        local g = new_widget("HorizontalBox", tree)
-        add_hbutton(h, host, g, "auto" .. k, "Auto " .. k .. ": off", 280, "autokit:" .. k, COLORS.btnOff, 20)
-        add_hbutton(h, host, g, "am" .. k, "-", 44, "autotarget:" .. k .. ":-1", COLORS.btnOff)
-        local v = make_text(tree, "", 24, COLORS.white)
-        h.w["target" .. k] = path_of(v)
-        local vs = g:AddChildToHorizontalBox(v)
-        pad(vs, 2, 0, 12, 0)
-        valign(vs, 2)
-        add_hbutton(h, host, g, "ap" .. k, "+", 44, "autotarget:" .. k .. ":1", COLORS.btnOff)
-        local gs = autoRow:AddChildToHorizontalBox(g)
-        pad(gs, 0, 0, 26, 0)
-        valign(gs, 2)
-        h.w["autoGroup" .. k] = path_of(g)
+    -- auto-stock: one card for everything automatic, a 3 x 3 grid of equal
+    -- columns: kits / fuses, supplies, fuel / worn, floor.
+    -- Each switch explains itself in a tooltip on its button.
+    local au = card(nil, "AUTO-STOCK", "Every 30 seconds, anything switched on here that's below its target is topped up, at store prices.")
+    local function tip(rec, text)
+        local b = rec and resolve(rec.b)
+        if b then pcall(function() b:SetToolTipText(FText(text)) end) end
     end
-    add(au, autoRow, 0, 4)
-
-    -- Money floor, on its own row: with Sport and Race present the kit row is
-    -- full width, and the floor ran off the right edge beside it.
+    local COL = 540
+    local function group(row, name, label, action, minus, plus, valueName, tipText, width)
+        local box = new_widget("SizeBox", tree)
+        pcall(function() box:SetWidthOverride(COL) end)
+        local g = new_widget("HorizontalBox", tree)
+        box:SetContent(g)
+        add_hbutton(h, host, g, name, label, width or 270, action, COLORS.btnOff, 20)
+        tip(h.b[name], tipText)
+        if minus then
+            add_hbutton(h, host, g, name .. "Minus", "-", 44, minus, COLORS.btnOff)
+            local v = make_text(tree, "", 24, COLORS.white)
+            pcall(function() v:SetMinDesiredWidth(64) end)
+            pcall(function() v:SetJustification(1) end)
+            h.w[valueName] = path_of(v)
+            local vs = g:AddChildToHorizontalBox(v)
+            pad(vs, 0, 0, 10, 0)
+            valign(vs, 2)
+            add_hbutton(h, host, g, name .. "Plus", "+", 44, plus, COLORS.btnOff)
+        end
+        local gs = row:AddChildToHorizontalBox(box)
+        valign(gs, 2)
+        return box
+    end
+    -- Row 1: kits. Sport / Race columns are hidden until unlocked.
+    local row1 = new_widget("HorizontalBox", tree)
+    for _, k in ipairs(AUTO_KITS) do
+        local box = group(row1, "auto" .. k, "Auto " .. k .. ": off", "autokit:" .. k,
+            "autotarget:" .. k .. ":-1", "autotarget:" .. k .. ":1", "target" .. k,
+            "Keeps N complete " .. k .. " cars' worth of parts in storage.")
+        h.w["autoGroup" .. k] = path_of(box)
+    end
+    add(au, row1, 0, 4)
+    -- Row 2: fuses, workshop supplies, fuel.
+    local row2 = new_widget("HorizontalBox", tree)
+    group(row2, "autoFuses", "Auto Fuses: off", "autofuses", "fusetarget:-3", "fusetarget:3", "fuseTarget",
+        "Keeps N of every fuse size, counting 3 per unopened pack. Buys packs of 3.")
+    group(row2, "autoSupplies", "Auto Supplies: off", "autosupplies", "supplytarget:-" .. SUPPLY_STEP, "supplytarget:" .. SUPPLY_STEP, "supplyTarget",
+        "Keeps N of every workshop supply, in the tier picked on the Workshop page.")
+    group(row2, "autoFuel", "Auto Fuel: off", "autofuel", nil, nil, nil,
+        "When your unlocked hub tanks together drop below 10%, fills them all at the pump's price. Needs your own mobile fuel tank.")
+    add(au, row2, 0, 4)
+    -- Row 3: what counts as stock, and the money floor.
+    local row3 = new_widget("HorizontalBox", tree)
+    group(row3, "worn", "Count Worn Parts: on", "worn", nil, nil, nil,
+        "On: Needs Repair parts count as stock and aren't replaced. Off: only Ready parts count.",
+        360)   -- no -/+ beside it, so it can be wider (270 clipped its label)
+    local fbox = new_widget("SizeBox", tree)
+    pcall(function() fbox:SetWidthOverride(COL) end)
     local floorRow = new_widget("HorizontalBox", tree)
+    fbox:SetContent(floorRow)
     local flabel = make_text(tree, "Keep Balance Above", 20, COLORS.dim)
-    -- As wide as the Auto buttons above and below, so the three "-" buttons line up.
-    pcall(function() flabel:SetMinDesiredWidth(280) end)
     local fls0 = floorRow:AddChildToHorizontalBox(flabel)
-    pad(fls0, 0, 0, 10, 0)
+    pad(fls0, 0, 0, 8, 0)
     valign(fls0, 2)
+    help_button(floorRow, "Keep Balance Above", "Auto-stock never spends below this. Buying by hand isn't limited.")
     add_hbutton(h, host, floorRow, "floorDown", "-", 44, "floor:-1", COLORS.btnOff)
     local floorVal = make_text(tree, "", 22, COLORS.price)
     h.w.floor = path_of(floorVal)
@@ -1537,14 +2000,176 @@ local function build_panel(h, host, hostPath)
     pad(fvs0, 2, 0, 12, 0)
     valign(fvs0, 2)
     add_hbutton(h, host, floorRow, "floorUp", "+", 44, "floor:1", COLORS.btnOff)
-    -- Messages console beside the floor (the row is mostly empty), so it doesn't
-    -- take a row of its own from the parts table on the small tablet screen.
-    -- Always shown, like a console: a dark panel titled like the cards.
-    local msgBox = make_border(tree, COLORS.body, 14, 6, 14, 6)
+    valign(row3:AddChildToHorizontalBox(fbox), 2)
+    add(au, row3)
+
+    -- Workshop page (hidden until Workshop is pressed): supplies.
+    h.pageCards = h.wcards
+    local ws = card(nil, "WORKSHOP SUPPLIES", "Car wash and body shop supplies at store prices. Add buys " .. SUPPLY_PACK
+        .. ". Carried: inventory and trunks, for reference.", true)
+    local sheadBg = make_border(tree, COLORS.header, 14, 6, 10, 6)
+    local shead = new_widget("HorizontalBox", tree)
+    sheadBg:SetContent(shead)
+    for _, spec in ipairs(SUPPLY_COLUMNS) do
+        local t = make_text(tree, spec[1], 18, COLORS.white)
+        local slot = shead:AddChildToHorizontalBox(t)
+        fill(slot, spec[2])
+        pad(slot, 0, 0, 6, 0)
+    end
+    local sbuyHead = make_text(tree, "Tier and Buy", 18, COLORS.white)
+    pcall(function() sbuyHead:SetMinDesiredWidth(SUPPLY_CONTROLS_WIDTH) end)
+    shead:AddChildToHorizontalBox(sbuyHead)
+    add(ws, sheadBg, 0, 2)
+    local slist = new_widget("ScrollBox", tree)
+    h.w.slist = path_of(slist)
+    fill(ws:AddChildToVerticalBox(slist), 1)
+
+    for _, p in ipairs(h.wcards) do pcall(function() resolve(p):SetVisibility(1) end) end
+
+    -- Gas Pump Hub page (its own tab, locked without a mobile tank).
+    h.hcards = {}
+    h.pageCards = h.hcards
+    -- Gas Pump Hub: one row per tank (name, level bar, gallons, refill steps)
+    -- and a row for all three. Buttons carry the cost; refreshed every second.
+    local hc = card(nil, "FUEL DELIVERY", "Fills your Gas Pump Hub's tanks at the pump's price. Skips the drive, not the cost.", true)
+    local hinfo = make_text(tree, "", 18, COLORS.dim)
+    h.w.hubInfo = path_of(hinfo)
+    add(hc, hinfo, 0, 4)
+    -- A tank gauge like the game's hub dials: our face (Assets\gauge_face.png)
+    -- with our needle (gauge_needle.png, drawn pointing up) on top, turned by
+    -- refresh_panel: -135 degrees = empty, +135 = full. Nil if the art is missing.
+    local function make_gauge(size)
+        local lib = resolve("/Script/Engine.Default__KismetRenderingLibrary")
+        local function img(file)
+            local tex = nil
+            local ok = lib and pcall(function() tex = lib:ImportFileAsTexture2D(host, MOD_DIR .. "Assets\\" .. file) end)
+            if not ok or not valid(tex) then log("gauge art not loaded: " .. file) return nil end
+            local im = new_widget("Image", tree)
+            pcall(function() im:SetBrushFromTexture(tex, false) end)
+            pcall(function() im:SetDesiredSizeOverride({ X = size, Y = size }) end)
+            pcall(function() im:SetVisibility(3) end)
+            return im
+        end
+        local face, needle = img("gauge_face.png"), img("gauge_needle.png")
+        if not face or not needle then return nil end
+        -- Overlay slots default to top-left at the image's desired size (a
+        -- 32 px brush): fill them, or the gauge draws as a 32 px dot.
+        local ov = new_widget("Overlay", tree)
+        for _, im in ipairs({ face, needle }) do
+            local sl = ov:AddChildToOverlay(im)
+            halign(sl, 0)
+            valign(sl, 0)
+        end
+        local box = new_widget("SizeBox", tree)
+        pcall(function() box:SetWidthOverride(size) end)
+        pcall(function() box:SetHeightOverride(size) end)
+        box:SetContent(ov)
+        return box, path_of(needle)
+    end
+
+    -- All Tanks first, so Fill All is always on screen; then one band per tank
+    -- (name over the gauge, stats under it, refill buttons two by two, Fill in
+    -- red), in a scroll box so a small screen never cuts one off.
+    h.hubRows = {}
+    do
+        local row = new_widget("HorizontalBox", tree)
+        local name = make_text(tree, "All Tanks", 22, COLORS.white)
+        pcall(function() name:SetMinDesiredWidth(194) end)
+        local ns = row:AddChildToHorizontalBox(name)
+        pad(ns, 18, 0, 0, 0)
+        valign(ns, 2)
+        local lvl = make_text(tree, "", 20, COLORS.dim)
+        local lvs = row:AddChildToHorizontalBox(lvl)
+        fill(lvs, 1)
+        valign(lvs, 2)
+        for _, pct in ipairs(Hub.HUB_STEPS) do
+            add_hbutton(h, host, row, "huball_" .. pct, pct == 100 and "Fill All" or ("+" .. pct .. "%"), 220, "hub:all:" .. pct, COLORS.btnLocked, 18)
+        end
+        add(hc, row, 2, 8)
+        h.hubRows.all = { level = path_of(lvl) }
+    end
+    -- The three tanks side by side, like the hub's dials in the game: each a
+    -- column with its name, gauge, gallons and percent, and the refill
+    -- buttons two by two (Fill in red). Fits the tablet without scrolling.
+    local tanksRow = new_widget("HorizontalBox", tree)
+    for _, t in ipairs({ 1, 2, 3 }) do
+        local band = make_border(tree, (t % 2 == 1) and COLORS.row or COLORS.rowAlt, 12, 10, 12, 10)
+        local col = new_widget("VerticalBox", tree)
+        band:SetContent(col)
+        local r = {}
+        halign(col:AddChildToVerticalBox(make_text(tree, "TANK #" .. t, 24, COLORS.white)), 2)
+        local gauge, needle = make_gauge(160)
+        if gauge then
+            local gs = col:AddChildToVerticalBox(gauge)
+            halign(gs, 2)
+            pad(gs, 0, 4, 0, 4)
+            r.needle = needle
+        else
+            local barBox = new_widget("SizeBox", tree)
+            pcall(function() barBox:SetWidthOverride(260) end)
+            pcall(function() barBox:SetHeightOverride(22) end)
+            local bar = new_widget("ProgressBar", tree)
+            barBox:SetContent(bar)
+            r.bar = path_of(bar)
+            local bs = col:AddChildToVerticalBox(barBox)
+            halign(bs, 2)
+            pad(bs, 0, 8, 0, 8)
+        end
+        local stats = new_widget("HorizontalBox", tree)
+        local lvl = make_text(tree, "", 18, COLORS.dim)
+        r.level = path_of(lvl)
+        valign(stats:AddChildToHorizontalBox(lvl), 2)
+        local pctText = make_text(tree, "", 24, COLORS.dim)
+        r.pct = path_of(pctText)
+        local ps = stats:AddChildToHorizontalBox(pctText)
+        pad(ps, 12, 0, 0, 0)
+        valign(ps, 2)
+        local ss = col:AddChildToVerticalBox(stats)
+        halign(ss, 2)
+        pad(ss, 0, 0, 0, 6)
+        for _, pair in ipairs({ { 10, 25 }, { 50, 100 } }) do
+            local line = new_widget("HorizontalBox", tree)
+            for _, pct in ipairs(pair) do
+                add_hbutton(h, host, line, "hub" .. t .. "_" .. pct, pct == 100 and "Fill" or ("+" .. pct .. "%"), 220, "hub:" .. t .. ":" .. pct, COLORS.btnLocked, 20)
+            end
+            local ls = col:AddChildToVerticalBox(line)
+            halign(ls, 2)
+            pad(ls, 10, 3, 0, 3)   -- add_hbutton pads 10 on the right; balance it
+        end
+        local slot = tanksRow:AddChildToHorizontalBox(band)
+        fill(slot, 1)
+        pad(slot, t == 1 and 0 or 4, 0, t == 3 and 0 or 4, 0)
+        h.hubRows[t] = r
+    end
+    add(hc, tanksRow, 0, 4)
+    -- Auto Fuel here too, under the gauges: the same switch as the AUTO-STOCK
+    -- grid's (one setting, two buttons).
+    local afRow = new_widget("HorizontalBox", tree)
+    add_hbutton(h, host, afRow, "autoFuelHub", "Auto Fuel: off", 270, "autofuel", COLORS.btnOff, 20)
+    do
+        local b = resolve(h.b.autoFuelHub.b)
+        if b then pcall(function() b:SetToolTipText(FText("When your unlocked hub tanks together drop below 10%, fills them all at the pump's price. Needs your own mobile fuel tank.")) end) end
+    end
+    local afNote = make_text(tree, "Fills every unlocked tank when together they drop below 10%.", 18, COLORS.dim)
+    local afs = afRow:AddChildToHorizontalBox(afNote)
+    pad(afs, 6, 0, 0, 0)
+    valign(afs, 2)
+    add(hc, afRow, 8, 0)
+    for _, p in ipairs(h.hcards) do pcall(function() resolve(p):SetVisibility(1) end) end
+    h.pageCards = nil
+
+    -- One STATUS bar, full width under every page, at a FIXED two-line height
+    -- so a long message never takes rows from the parts table (a three-line
+    -- message once shrank the table to two rows).
+    -- A dark console panel (like the cards' inner boxes) inside a card-coloured
+    -- bar, so the messages read as a console rather than loose text.
+    local msgBox = make_border(tree, COLORS.card, 22, 6, 22, 6)
+    local console = make_border(tree, COLORS.body, 14, 4, 14, 4)
+    pcall(function() console:SetClipping(1) end)   -- ClipToBounds: a third line is cut, not drawn over
+    msgBox:SetContent(console)
     local msgRow = new_widget("HorizontalBox", tree)
-    msgBox:SetContent(msgRow)
-    local msgTitle = make_text(tree, "STATUS", 18, COLORS.section)
-    local mts = msgRow:AddChildToHorizontalBox(msgTitle)
+    console:SetContent(msgRow)
+    local mts = msgRow:AddChildToHorizontalBox(make_text(tree, "STATUS", 18, COLORS.section))
     pad(mts, 0, 0, 14, 0)
     valign(mts, 2)
     local st = make_text(tree, "", 20, COLORS.dim)
@@ -1553,31 +2178,10 @@ local function build_panel(h, host, hostPath)
     local sts = msgRow:AddChildToHorizontalBox(st)
     fill(sts, 1)
     valign(sts, 2)
-    local mbs = floorRow:AddChildToHorizontalBox(msgBox)
-    fill(mbs, 1)
-    pad(mbs, 24, 0, 0, 0)
-    valign(mbs, 2)
-    add(au, floorRow, 0, 4)
-
-    -- second row: fuses (kept as a stock level, not per car) + worn toggle
-    local fuseRow = new_widget("HorizontalBox", tree)
-    add_hbutton(h, host, fuseRow, "autoFuses", "Auto Fuses: off", 280, "autofuses", COLORS.btnOff, 20)
-    add_hbutton(h, host, fuseRow, "fm", "-", 44, "fusetarget:-3", COLORS.btnOff)
-    local fv = make_text(tree, "", 24, COLORS.white)
-    h.w.fuseTarget = path_of(fv)
-    local fvs = fuseRow:AddChildToHorizontalBox(fv)
-    pad(fvs, 2, 0, 12, 0)
-    valign(fvs, 2)
-    add_hbutton(h, host, fuseRow, "fp", "+", 44, "fusetarget:3", COLORS.btnOff)
-    local fl = make_text(tree, "", 18, COLORS.dim)
-    h.w.fuseInfo = path_of(fl)
-    local fls = fuseRow:AddChildToHorizontalBox(fl)
-    fill(fls, 1)
-    pad(fls, 4, 0, 10, 0)
-    valign(fls, 2)
-    -- Whether worn parts count toward complete cars and auto-stock.
-    add_hbutton(h, host, fuseRow, "worn", "Count Parts Needing Repair: on", 460, "worn", COLORS.btnOff, 20)
-    add(au, fuseRow)
+    local msgSize = new_widget("SizeBox", tree)
+    pcall(function() msgSize:SetHeightOverride(84) end)   -- two 20 pt lines (about 58 px) plus both paddings
+    msgSize:SetContent(msgBox)
+    pad(body:AddChildToVerticalBox(msgSize), 0, 0, 0, 0)
 
     switcher:AddChild(root)
     h.panelPath = path_of(root)
@@ -1615,8 +2219,10 @@ local function refresh_panel(h)
         if status.money == nil then status.money = money
         elseif money ~= status.money then status.text, status.good, status.staleOnMoney = "", true, nil end
     end
-    set_text(hw(h, "info"), string.format("Account Balance %s   Reputation Level %s   Fame Level %s   Free Storage %s",
-        money_text(money), rep and tostring(rep) or "-", fame and tostring(fame) or "-", free and num_text(free) or "-"))
+    -- One line, short labels (with the complete-cars counts added below): the
+    -- longer two-part line ran past the panel edge with Sport unlocked.
+    local infoText = string.format("Balance %s  ·  Reputation %s  ·  Fame %s  ·  Free Storage %s",
+        money_text(money), rep and tostring(rep) or "-", fame and tostring(fame) or "-", free and num_text(free) or "-")
 
     -- Kit tabs: Sport / Race only appear once every part in them is unlocked.
     local lockedNotes = {}
@@ -1627,7 +2233,7 @@ local function refresh_panel(h)
         -- Sport / Race stay as tabs when locked: dimmed, with a padlock.
         local locked = not ok and k ~= "Stock"
         if b then pcall(function() b:GetParent():SetVisibility(0) end) end
-        style_button(rec, nil, locked and COLORS.btnLocked or (settings.kit == k and COLORS.btn or COLORS.btnOff))
+        style_button(rec, nil, locked and COLORS.btnLocked or ((settings.kit == k and h.page == "main") and COLORS.btn or COLORS.btnOff))
         if rec then set_text(resolve(rec.l), k, locked and COLORS.dim or COLORS.white) end
         if rec and rec.lock then pcall(function() resolve(rec.lock):SetVisibility(locked and 3 or 1) end) end
         -- Short form beside the tabs (the tabs themselves now show the lock):
@@ -1637,6 +2243,25 @@ local function refresh_panel(h)
         end
     end
     set_text(hw(h, "locked"), table.concat(lockedNotes, "      "))
+    -- The other pages' copies of the kit tabs, and the Workshop / Gas Pump Hub
+    -- tabs on every page (lit on their own page; the hub locked without a tank).
+    local hubOk = (Hub.hub_level() or 0) >= 1 and Hub.tanker_owned()
+    for _, pre in ipairs({ "kit", "wkit", "hkit" }) do
+        if pre ~= "kit" then
+            for _, k in ipairs({ "Stock", "Sport", "Race" }) do
+                local rec = h.b[pre .. k]
+                local ok = k == "Stock" or kit_unlocked(k)
+                style_button(rec, nil, ok and COLORS.btnOff or COLORS.btnLocked)
+                if rec then set_text(resolve(rec.l), k, ok and COLORS.white or COLORS.dim) end
+                if rec and rec.lock then pcall(function() resolve(rec.lock):SetVisibility(ok and 1 or 3) end) end
+            end
+        end
+        style_button(h.b[pre .. "Workshop"], nil, h.page == "workshop" and COLORS.btn or COLORS.btnOff)
+        local hr = h.b[pre .. "Hub"]
+        style_button(hr, nil, (not hubOk and COLORS.btnLocked) or (h.page == "hub" and COLORS.btn) or COLORS.btnOff)
+        if hr then set_text(resolve(hr.l), "Fuel Delivery", hubOk and COLORS.white or COLORS.dim) end
+        if hr and hr.lock then pcall(function() resolve(hr.lock):SetVisibility(hubOk and 1 or 3) end) end
+    end
     style_button(h.b.extras, settings.extras and "Body & Consumables: on" or "Body & Consumables: off",
         settings.extras and COLORS.btn or COLORS.btnOff)
 
@@ -1649,7 +2274,7 @@ local function refresh_panel(h)
             canParts[#canParts + 1] = string.format("%s %d", k, builds_in_stock(kit_lines(k, settings.extras), counts))
         end
     end
-    set_text(hw(h, "canbuild"), "Complete Cars in Storage:   " .. table.concat(canParts, "      "))
+    set_text(hw(h, "info"), infoText .. "  ·  Complete Cars: " .. table.concat(canParts, ", "))
 
     local lines = kit_lines(settings.kit, settings.extras)
     local total = 0
@@ -1710,32 +2335,129 @@ local function refresh_panel(h)
         local g = hw(h, "autoGroup" .. k)
         if g then pcall(function() g:SetVisibility(kit_unlocked(k) and 0 or 1) end) end
     end
-    style_button(h.b.worn, settings.countWorn and "Count Parts Needing Repair: on" or "Count Parts Needing Repair: off",
+    style_button(h.b.worn, settings.countWorn and "Count Worn Parts: on" or "Count Worn Parts: off",
         settings.countWorn and COLORS.btn or COLORS.btnOff)
     style_button(h.b.autoFuses, auto_label("Auto Fuses", settings.fuseOn))
     set_text(hw(h, "fuseTarget"), tostring(settings.fuseTarget))
     set_text(hw(h, "floor"), settings.moneyFloor > 0 and money_text(settings.moneyFloor) or "OFF", settings.moneyFloor > 0 and COLORS.price or COLORS.bad)
-    -- Lowest fuse size on hand, so a shortage is visible at a glance.
-    local low = nil
-    for _, f in ipairs(fuse_stock(counts)) do
-        if not low or f.have < low.have then low = f end
+    -- Workshop supplies (rows rebuilt only when the game's list changes).
+    local groups = supply_groups()
+    local skey = {}
+    for _, g in ipairs(groups) do skey[#skey + 1] = g.key .. "/" .. #g.tiers end
+    if h.supplyKey ~= table.concat(skey, ",") then rebuild_supply_rows(h, groups) end
+    local byKey = {}
+    for _, g in ipairs(groups) do byKey[g.key] = g end
+    for _, r in ipairs(h.srows or {}) do
+        local g = byKey[r.key]
+        if g then
+            local t = supply_tier(g)
+            local e = t.entry
+            local have = usable(counts, e)
+            local cc = carried[e.clsPath]
+            local cn = cc and (cc.ready + cc.repair) or 0
+            set_text(resolve(r.cells[1]), g.name, COLORS.white)
+            set_text(resolve(r.cells[2]), money_text(e.price))
+            local enough = settings.supplyOn and have >= settings.supplyTarget
+            set_text(resolve(r.cells[3]), tostring(have), (have == 0 and COLORS.bad) or (enough and COLORS.good) or COLORS.text)
+            set_text(resolve(r.cells[4]), tostring(cn), cn > 0 and COLORS.text or COLORS.dim)
+            -- One tier: the button only names it. More: it switches between them.
+            style_button(r.b.tier, "Tier: " .. t.label, #g.tiers > 1 and COLORS.btnOff or COLORS.btnLocked)
+            if e.avail then
+                style_button(r.b.add, string.format("Add %d  (%s)", SUPPLY_PACK, money_text(SUPPLY_PACK * e.price)), COLORS.btn)
+            else
+                style_button(r.b.add, "Locked", COLORS.btnOff)
+            end
+        end
     end
-    set_text(hw(h, "fuseInfo"), low and string.format("of each fuse size  (lowest stock: %dA, %d on hand)", low.amps, low.have)
-        or "of each fuse size", (low and low.have < settings.fuseTarget) and COLORS.price or COLORS.dim)
-    local st = hw(h, "status")
-    set_text(st, status.text, status.good and COLORS.good or COLORS.bad)
-    if st then pcall(function() st:SetVisibility(3) end) end
+    -- Gas Pump Hub (only looked at while the workshop page is showing).
+    if h.page == "hub" and h.hubRows then
+        local hub, why = Hub.hub_state()
+        local price, fromGame = Hub.fuel_price()
+        local levels = hub and Hub.tank_levels(hub) or nil
+        set_text(hw(h, "hubInfo"), hub and string.format("Gas station price: %s per gallon%s.", Hub.cents_text(price),
+            fromGame and "" or " (the pump's usual price)") or why, hub and COLORS.dim or COLORS.price)
+        local sumF, sumM = 0, 0
+        for _, t in ipairs({ 1, 2, 3, "all" }) do
+            local r = h.hubRows[t]
+            local tanks = t == "all" and { 1, 2, 3 } or { t }
+            local lockedTank = levels and t ~= "all" and levels[t].locked
+            if lockedTank then
+                -- Above the hub's level: greyed dial at zero, no buttons.
+                local needle = resolve(r.needle)
+                if needle then pcall(function() needle:SetRenderTransformAngle(-135) end) end
+                set_text(resolve(r.level), "Locked", COLORS.dim)
+                if r.pct then set_text(resolve(r.pct), "Gas Hub Level " .. t, COLORS.dim) end
+            elseif levels then
+                local f, m = 0, 0
+                for _, i in ipairs(tanks) do f, m = f + levels[i].fuel, m + levels[i].max end
+                local pctFull = m > 0 and f / m or 0
+                -- The game's dials: red below 20%, green from 80%.
+                local col = (pctFull < 0.2 and COLORS.bad) or (pctFull >= 0.8 and COLORS.good) or COLORS.price
+                local bar = resolve(r.bar)
+                if bar then
+                    pcall(function() bar:SetPercent(pctFull) end)
+                    pcall(function() bar:SetFillColorAndOpacity(col) end)
+                end
+                local needle = resolve(r.needle)
+                if needle then pcall(function() needle:SetRenderTransformAngle(-135 + 270 * math.max(0, math.min(1, pctFull))) end) end
+                local pctStr = string.format("%d%%", math.floor(pctFull * 100 + 0.5))
+                if r.pct then
+                    set_text(resolve(r.level), string.format("%.1f / %s gal", f, num_text(m)), COLORS.dim)
+                    set_text(resolve(r.pct), pctStr, col)
+                else
+                    set_text(resolve(r.level), string.format("%.1f / %s gal   %s", f, num_text(m), pctStr), col)
+                end
+            else
+                set_text(resolve(r.level), "-", COLORS.dim)
+                if r.pct then set_text(resolve(r.pct), "") end
+            end
+            for _, pct in ipairs(Hub.HUB_STEPS) do
+                local rec = h.b["hub" .. t .. "_" .. pct]
+                local label = pct == 100 and (t == "all" and "Fill All" or "Fill") or ("+" .. pct .. "%")
+                if lockedTank then
+                    style_button(rec, "Locked", COLORS.btnLocked)
+                elseif levels then
+                    local _, gal = Hub.hub_adds(levels, tanks, pct)
+                    local _, fillGal = Hub.hub_adds(levels, tanks, 100)
+                    -- A step that would be capped at full is the same as Fill: grey it.
+                    if pct < 100 and gal > 0 and gal >= fillGal - 0.05 then
+                        style_button(rec, label, COLORS.btnOff)
+                    elseif gal > 0 then
+                        style_button(rec, string.format("%s  (%s)", label, money_text(Hub.floor_cents(gal * price))), pct == 100 and COLORS.btnFill or COLORS.btn)
+                    else
+                        style_button(rec, "Full", COLORS.btnOff)
+                    end
+                else
+                    style_button(rec, label, COLORS.btnLocked)
+                end
+            end
+        end
+    end
+    style_button(h.b.autoSupplies, auto_label("Auto Supplies", settings.supplyOn))
+    style_button(h.b.autoFuel, auto_label("Auto Fuel", settings.fuelOn))
+    style_button(h.b.autoFuelHub, auto_label("Auto Fuel", settings.fuelOn))
+    set_text(hw(h, "supplyTarget"), tostring(settings.supplyTarget))
+
+    for _, name in ipairs({ "status", "status2", "status3" }) do
+        local st = hw(h, name)
+        set_text(st, status.text, status.good and COLORS.good or COLORS.bad)
+        if st then pcall(function() st:SetVisibility(3) end) end
+    end
 end
 
--- Help is a page of its own: show it instead of the cards, or the cards again.
-local function show_help(h, on)
-    h.helpOpen = on
-    pcall(function() resolve(h.w.helpCard):SetVisibility(on and 0 or 1) end)
-    for _, p in ipairs(h.cards or {}) do
-        local c = resolve(p)
-        if c then pcall(function() c:SetVisibility(on and 1 or 0) end) end
+-- Three pages share the body: "main" (parts), "workshop" (supplies) and
+-- "help". Each shows its own cards and hides the others'.
+local function show_page(h, page)
+    if page == "help" and h.page ~= "help" then h.helpReturn = h.page or "main" end
+    h.page = page
+    pcall(function() resolve(h.w.helpCard):SetVisibility(page == "help" and 0 or 1) end)
+    for list, name in pairs({ [h.cards or {}] = "main", [h.wcards or {}] = "workshop", [h.hcards or {}] = "hub" }) do
+        for _, p in ipairs(list) do
+            local c = resolve(p)
+            if c then pcall(function() c:SetVisibility(page == name and 0 or 1) end) end
+        end
     end
-    style_button(h.b.help, on and "Hide Help" or "Help")
+    style_button(h.b.help, page == "help" and "Hide Help" or "Help")
 end
 
 local function open_panel(hostPath)
@@ -1749,7 +2471,7 @@ local function open_panel(hostPath)
     -- buy counts (Cars, each part row) back at 1. Auto targets are kept.
     settings.builds = 1
     for k in pairs(rowCars) do rowCars[k] = nil end
-    if h.helpOpen then show_help(h, false) end
+    if h.page ~= "main" then show_page(h, "main") end
     lastAvailCheck = -1e9
     refresh_panel(h)
     local switcher = host.ApplicationWidgetSwitcher
@@ -1765,23 +2487,29 @@ local function close_panel(hostPath)
 end
 
 -------------------------------------------------------------------------------
--- Report a Bug / request a feature: issues go to the public GitHub repo. The
--- mod never posts anything itself (that would need a login built in): it
--- saves a report file, opens GitHub's new-issue form pre-filled, and opens
--- the report's folder so the player can drag the file in and press Submit.
-
-local ISSUES_URL = "https://github.com/lukarick/Lukas-Mods/issues/new"
+-- Report a Bug / request a feature. The mod never posts anything itself (that
+-- would need a login built in): it saves a report file, opens the issue form
+-- pre-filled, and opens the report's folder so the player can drag the file in
+-- and press Submit. The buttons open the public repo's GitHub issue forms at
+-- the org's final path (1.0 used the old github.com/lukarick/... path, which
+-- only works through GitHub's redirect). A later version moves them to
+-- lukasmods.com/bug and /request once that domain is live.
+-- Reports are titled with the game code and display name, not the code id
+-- MOD, which stays the log prefix the report scans for.
+local ISSUES = { url = "https://github.com/lukas-mods/Lukas-Mods/issues/new", name = "CDS - Parts Manager" }
 local UE4SS_LOG = MOD_DIR .. "..\\..\\UE4SS.log"
 
 local function url_encode(s)
     return (tostring(s):gsub("[^%w%-%._~]", function(c) return string.format("%%%02X", c:byte()) end))
 end
 
+-- Spaces become %20, never "+": a "+" re-encoded by the redirect would show
+-- in the form as a plus (url_encode escapes everything but -._~ and letters).
 local function issue_url(template, extra)
-    local q = { "template=" .. template, "title=" .. url_encode("[" .. MOD .. "] "),
-        "mod=" .. url_encode(MOD), "version=" .. url_encode(VERSION) }
+    local q = { "template=" .. template, "title=" .. url_encode("[" .. ISSUES.name .. "] "),
+        "mod=" .. url_encode(ISSUES.name), "version=" .. url_encode(VERSION) }
     for k, v in pairs(extra or {}) do q[#q + 1] = k .. "=" .. url_encode(v) end
-    return ISSUES_URL .. "?" .. table.concat(q, "&")
+    return ISSUES.url .. "?" .. table.concat(q, "&")
 end
 
 local function open_external(target, select)
@@ -1836,6 +2564,67 @@ local function write_bug_report()
     add(read_all(SETTINGS_FILE) or "(none)")
     add("== UE4SS mods.txt ==")
     add(read_all(MOD_DIR .. "..\\mods.txt") or "(not found)")
+
+    -- Every folder in Mods\: mods.txt alone misses the mods
+    -- turned on by their own enabled.txt. Per mod: how it is turned on, the
+    -- version it logged this session (if it logs one), and a fingerprint of its
+    -- Scripts\main.lua (size + FNV-1a; Lua has no file dates). Plus the build.
+    local modsDir = MOD_DIR .. "..\\"
+    local names, how = {}, "IterateGameDirectories"
+    pcall(function()
+        local m = IterateGameDirectories().Game.Binaries.Win64.ue4ss.Mods
+        for k, v in pairs(m) do
+            if type(k) == "string" and not k:find("^__") and type(v) == "table" then names[#names + 1] = k end
+        end
+    end)
+    if #names == 0 then
+        how = "dir"
+        pcall(function()
+            local p = io.popen('dir /b /ad "' .. modsDir .. '" 2>nul')
+            if p then
+                for l in p:lines() do if l ~= "" then names[#names + 1] = l end end
+                p:close()
+            end
+        end)
+    end
+    table.sort(names, function(a, b) return a:lower() < b:lower() end)
+    local listed = {}
+    for line in (read_all(modsDir .. "mods.txt") or ""):gmatch("[^\r\n]+") do
+        local nm, v = line:match("^%s*([^:;]-)%s*:%s*(%d)")
+        if nm then listed[nm] = (v == "1") end
+    end
+    local logText = read_all(UE4SS_LOG) or ""
+    local function logged_version(name)
+        local found, tag = nil, "[" .. name .. "]"
+        for line in logText:gmatch("[^\r\n]+") do
+            if line:find(tag, 1, true) then found = line:match("[%s%(]v(%d+[%w%.%-]*)") or found end
+        end
+        return found
+    end
+    local function fingerprint(file)
+        local f = io.open(file, "rb")
+        if not f then return nil end
+        local data = f:read("a")
+        f:close()
+        local h = 2166136261
+        for i = 1, #data do h = ((h ~ data:byte(i)) * 16777619) & 0xFFFFFFFF end
+        return string.format("%d bytes, fnv %08x", #data, h)
+    end
+    add("== Installed UE4SS mods (" .. #names .. ", listed with " .. how .. ") ==")
+    for _, nm in ipairs(names) do
+        local d = modsDir .. nm .. "\\"
+        local on = {}
+        local et = io.open(d .. "enabled.txt", "r")
+        if et then et:close() on[#on + 1] = "enabled.txt" end
+        if listed[nm] == true then on[#on + 1] = "mods.txt:1" elseif listed[nm] == false then on[#on + 1] = "mods.txt:0" end
+        local v = logged_version(nm)
+        add(string.format("%-30s on: %-24s version: %-12s main.lua: %s", nm, #on > 0 and table.concat(on, ", ") or "no",
+            v and ("v" .. v) or "-", fingerprint(d .. "Scripts\\main.lua") or "none"))
+    end
+    -- Steam's manifest sits in steamapps\, eight folders up from this mod.
+    local acf = read_all(MOD_DIR .. string.rep("..\\", 8) .. "appmanifest_2404880.acf")
+    add("game build: " .. ((acf and acf:match('"buildid"%s+"(%d+)"')) or "unknown (not found; a non-Steam install?)"))
+    add("")
 
     local log = read_all(UE4SS_LOG)
     if log then
@@ -1893,7 +2682,32 @@ local function do_action(hostPath, action)
         return
     end
     if action == "help" then
-        if h then show_help(h, not h.helpOpen) end
+        if h then show_page(h, h.page == "help" and (h.helpReturn or "main") or "help") end
+        return
+    end
+    local tipKey = action:match("^tip:(.+)$")
+    if tipKey then
+        if h and h.tips and h.tips[tipKey] then set_status(h.tips[tipKey], true) refresh_panel(h) end
+        return
+    end
+    if action == "gashub" then
+        if h then
+            if (Hub.hub_level() or 0) < 1 then
+                set_status("Fuel Delivery needs the Gas Pump Hub upgrade (Upgrades app on your tablet).", false)
+            elseif Hub.tanker_owned() then
+                show_page(h, "hub")
+            else
+                set_status("Fuel Delivery needs your own mobile fuel tank (sold at the gas station). Own one? Go near it, then try again.", false)
+            end
+            refresh_panel(h)
+        end
+        return
+    end
+    if action == "workshop" then
+        if h then
+            show_page(h, "workshop")
+            refresh_panel(h)
+        end
         return
     end
     local kind, arg = action:match("^(%w+):?(.*)$")
@@ -1902,7 +2716,9 @@ local function do_action(hostPath, action)
         local ok, why = true, ""
         if arg ~= "Stock" then ok, why = kit_unlocked(arg) end
         -- STATUS is sentences: "Sport unlocks at fame level 6." (the labels are Title Case).
-        if ok then settings.kit = arg
+        if ok then
+            settings.kit = arg
+            if h and (h.page == "workshop" or h.page == "hub") then show_page(h, "main") end
         else
             local msg = why ~= "" and (why:gsub(" Unlocks at Fame Level ", " unlocks at fame level "):gsub(" Needs the ", " needs the "):gsub(" Locked ", " locked ") .. ".") or (arg .. " is locked.")
             set_status(msg, false)
@@ -1923,7 +2739,7 @@ local function do_action(hostPath, action)
         lastAutoWarning = nil
     elseif kind == "fusetarget" then
         settings.fuseTarget = math.max(FUSES_PER_PACK, math.min(999, settings.fuseTarget + tonumber(arg)))
-    elseif (kind == "autofuses" or kind == "autokit") and autoPaused then
+    elseif (kind == "autofuses" or kind == "autokit" or kind == "autosupplies" or kind == "autofuel") and autoPaused then
         -- While paused, any Auto button resumes (it does not toggle). The
         -- player is in the loaded world now, so take it as the settled one.
         autoPaused = false
@@ -1939,6 +2755,45 @@ local function do_action(hostPath, action)
         lastAutoWarning = nil
         set_status(settings.fuseOn and string.format("Auto Fuses on: keeping %d of each fuse size (packs of %d).", settings.fuseTarget, FUSES_PER_PACK)
             or "Auto Fuses off.", true)
+    elseif kind == "autosupplies" then
+        settings.supplyOn = not settings.supplyOn
+        lastAutoCheck = -1e9
+        lastAutoWarning = nil
+        set_status(settings.supplyOn and string.format("Auto Supplies on: keeping %d of each workshop supply.", settings.supplyTarget)
+            or "Auto Supplies off.", true)
+    elseif kind == "autofuel" then
+        settings.fuelOn = not settings.fuelOn
+        lastAutoCheck = -1e9
+        lastAutoWarning = nil
+        set_status(settings.fuelOn and "Auto Fuel on: when your unlocked tanks together drop below 10%, they're all filled."
+            or "Auto Fuel off.", true)
+    elseif kind == "supplytarget" then
+        settings.supplyTarget = math.max(0, math.min(999, settings.supplyTarget + tonumber(arg)))
+    elseif kind == "srowtier" or kind == "srowadd" then
+        local g = nil
+        for _, x in ipairs(supply_groups()) do if x.key == arg then g = x end end
+        if g and kind == "srowtier" then
+            -- Step to the next tier (wraps); one tier = nothing to switch to.
+            if #g.tiers > 1 then
+                local cur = supply_tier(g)
+                local idx = 1
+                for i, t in ipairs(g.tiers) do if t == cur then idx = i end end
+                local nxt = g.tiers[idx % #g.tiers + 1]
+                settings.supplyTier[g.key] = nxt.suffix
+                set_status(string.format("%s: buying the %s tier.", g.name, nxt.label), true)
+            else
+                set_status(string.format("%s only comes in %s so far.", g.name, g.tiers[1].label), true)
+            end
+        elseif g and not job then
+            local t = supply_tier(g)
+            local ok, err = start_job({ { entry = t.entry, qty = SUPPLY_PACK } }, string.format("%s - %s", g.name, t.label))
+            if ok and job then job.oneSupply = true end
+            if not ok then set_status(err, false) status.staleOnMoney = true end
+        end
+    elseif kind == "hub" then
+        local t, pct = arg:match("^(%w+):(%d+)$")
+        pct = tonumber(pct)
+        if t and pct then Hub.hub_fill(t == "all" and { 1, 2, 3 } or { tonumber(t) }, pct) end
     elseif kind == "worn" then
         settings.countWorn = not settings.countWorn
         lastAutoCheck = -1e9
@@ -2051,7 +2906,7 @@ local function on_host_ready(kind)
         if not ok or not valid(host) then return end
         -- Straight away, inside the hook (no frame delay, which made our icons
         -- pop in late): the CarShopTablet mod adds its icon the same way.
-        -- Post-hooks on this function never fired in game (-18).
+        -- Post-hooks on this function never fired in game.
         local okI, err = xpcall(crumb, debug.traceback, kind .. " icon", add_icon, host, kind)
         if not okI then log(kind .. " icon failed: " .. tostring(err)) end
     end
@@ -2064,7 +2919,7 @@ end
 --
 -- No in-game email any more (0.11 RC): an email added with economy:AddMail
 -- filled only 8 of S_MailData's 13 fields, and on game build 25832017 the next
--- autosave crashed every time (the save-crash bisect of 2026-10-11, -26..-33).
+-- autosave crashed every time.
 
 local ALERT_SECONDS = 20
 local alertState = { pending = nil, bannerPath = nil, hideAt = nil }
@@ -2162,11 +3017,16 @@ end
 -- (hooks on WBP_DesktopComputer_BASE_C:OnPreviewKeyDown and the subclasses'
 -- OnKeyDown, all game thread). Not RegisterKeyBind: UE4SS runs those callbacks
 -- on its own input thread. Not IsInputKeyDown: it doesn't see keys while the
--- tablet has focus (tested -11).
+-- tablet has focus (tested).
 local function on_escape()
     for hostPath, h in pairs(hosts) do
         if panel_visible(h) then
-            if h.helpOpen then do_action(hostPath, "help") else close_panel(hostPath) end
+            -- Escape steps back: Help -> its page, Workshop -> the parts page, parts -> desktop.
+            if h.page == "help" then do_action(hostPath, "help")
+            elseif h.page == "workshop" or h.page == "hub" then
+                show_page(h, "main")
+                refresh_panel(h)
+            else close_panel(hostPath) end
         end
     end
 end
@@ -2332,13 +3192,16 @@ game_loop("main", 100, function()
                 -- Watched while paused too, so a pause ends when another save loads.
                 if any_auto_configured() and not job then crumb("watch world", watch_world) end
                 if alertState.pending or alertState.hideAt then crumb("alert", alert_tick) end
+                -- Notes when the gas pump hub loads, so its settle minute runs
+                -- from then, not from the first look at the workshop page.
+                crumb("hub watch", Hub.hub_state)
             end
             if ticks % 10 == 0 then
                 for _, h in pairs(hosts) do
                     if panel_visible(h) then crumb("refresh " .. h.kind, refresh_panel, h) end
                 end
             end
-            -- DEBUG (save-crash hunt): every 10 s, what IM is holding in the game.
+            -- DEBUG (save-crash hunt): every 10 s, what the mod is holding in the game.
             if traceOn and ticks % 100 == 0 then
                 local made, live = 0, 0
                 for _, p in pairs(checkObjects) do
