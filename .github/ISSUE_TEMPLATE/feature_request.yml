@@ -7,14 +7,14 @@ body:
     id: mod
     attributes:
       label: Mod
-      placeholder: PartsManager
+      placeholder: CDS - Parts Manager
     validations:
       required: true
   - type: input
     id: version
     attributes:
       label: Mod Version
-      placeholder: "1.0"
+      placeholder: "1.1"
   - type: textarea
     id: idea
     attributes:

@@ -12,14 +12,14 @@ body:
     attributes:
       label: Mod
       description: Which mod is this about?
-      placeholder: PartsManager
+      placeholder: CDS - Parts Manager
     validations:
       required: true
   - type: input
     id: version
     attributes:
       label: Mod Version
-      placeholder: "1.0"
+      placeholder: "1.1"
     validations:
       required: true
   - type: textarea
