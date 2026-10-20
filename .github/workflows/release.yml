@@ -36,6 +36,16 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
+
+          # Fetch the tag OBJECT explicitly rather than trusting whatever the
+          # checkout left in refs/tags/. On 2026-10-20 the first real run failed
+          # here: %(contents) returned the COMMIT MESSAGE, so every fact below
+          # read as missing while the tag itself carried them all. A ref that
+          # points at the commit and a ref that is absent produce the identical
+          # symptom, and neither is this workflow's business to care about.
+          git fetch --force --no-recurse-submodules origin \
+            "refs/tags/${TAG}:refs/tags/${TAG}"
+
           MSG="$(git for-each-ref --format='%(contents)' "refs/tags/${TAG}")"
 
           # An unannotated tag, or one from before this workflow existed, has no
@@ -51,6 +61,12 @@ jobs:
           for v in MOD_PATH ZIP_NAME ZIP_SHA EPOCH TITLE; do
             if [ -z "${!v}" ]; then
               echo "::error::tag ${TAG} carries no ${v}. This tag was not created by the publish tool, so there is nothing to build."
+              # Print what was actually read, so a repeat of this failure names
+              # its own cause instead of looking like a malformed tag. The tag
+              # annotation is public; there is nothing to redact.
+              echo "::group::what refs/tags/${TAG} actually contained"
+              printf '%s\n' "$MSG"
+              echo "::endgroup::"
               exit 1
             fi
           done
