@@ -56,9 +56,9 @@ jobs:
           ZIP_NAME="$(get zip-name)"
           ZIP_SHA="$(get zip-sha256)"
           EPOCH="$(get source-epoch)"
-          TITLE="$(printf '%s\n' "$MSG" | head -1)"
+          SUMMARY="$(printf '%s\n' "$MSG" | head -1)"
 
-          for v in MOD_PATH ZIP_NAME ZIP_SHA EPOCH TITLE; do
+          for v in MOD_PATH ZIP_NAME ZIP_SHA EPOCH SUMMARY; do
             if [ -z "${!v}" ]; then
               echo "::error::tag ${TAG} carries no ${v}. This tag was not created by the publish tool, so there is nothing to build."
               # Print what was actually read, so a repeat of this failure names
@@ -71,6 +71,26 @@ jobs:
             fi
           done
           [ -d "$MOD_PATH" ] || { echo "::error::mod-path '${MOD_PATH}' is not in this tree"; exit 1; }
+
+          # The Release headline follows the convention the first two Releases
+          # set by hand:
+          #     LukasMods - <GAME> - <Mod Name> <version>
+          # Every part comes from the TAG, so this names no game and no mod and
+          # needs no edit for the next one. The first automated Release got this
+          # wrong -- it used the annotation's first line, which is a summary and
+          # not a title -- and Aaron corrected the headline by hand on 2026-10-20.
+          # An explicit `release-title:` line in the annotation wins, for a name
+          # the word split would get wrong, such as an acronym run.
+          TITLE="$(get release-title)"
+          if [ -z "$TITLE" ]; then
+            GAME="${TAG%%-*}"
+            REST="${TAG#*-}"
+            SLUG="${REST%-*}"
+            VERSION="${REST##*-}"
+            WORDS="$(printf '%s' "$SLUG" | sed -E 's/([a-z0-9])([A-Z])/\1 \2/g')"
+            TITLE="LukasMods - ${GAME} - ${WORDS} ${VERSION}"
+          fi
+          echo "release title: ${TITLE}"
 
           {
             echo "tag=$TAG"
