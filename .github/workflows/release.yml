@@ -1,0 +1,157 @@
+# Creates the GitHub Release when a release tag is pushed.
+#
+# Why this exists: nothing outside GitHub can create a Release here. The deploy
+# key that publishes this repo speaks git only, and a Release is a REST object
+# bolted onto a tag. That is deliberate -- the same property that stops the key
+# making a Release is what guarantees every byte it pushes runs the local
+# pre-push hook. Granting an API credential the rights to make Releases would
+# hand back a path into this repository that skips that hook. So the capability
+# lives HERE instead, in a token GitHub mints for one run and then destroys.
+#
+# It is game- and mod-agnostic on purpose. Nothing below names a game, a mod or
+# a file; every value comes from the tag. The next mod needs no edit.
+name: Release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tagged tree
+        uses: actions/checkout@v4
+        with:
+          # The tag OBJECT carries the facts below; a shallow checkout has the
+          # commit but not the annotation.
+          fetch-depth: 0
+
+      - name: Read the release facts from the tag
+        id: facts
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          MSG="$(git for-each-ref --format='%(contents)' "refs/tags/${TAG}")"
+
+          # An unannotated tag, or one from before this workflow existed, has no
+          # facts. Stop with a readable reason instead of publishing something
+          # half-formed -- a Release with the wrong asset is worse than none.
+          get() { printf '%s\n' "$MSG" | sed -n "s/^$1: //p" | head -1; }
+          MOD_PATH="$(get mod-path)"
+          ZIP_NAME="$(get zip-name)"
+          ZIP_SHA="$(get zip-sha256)"
+          EPOCH="$(get source-epoch)"
+          TITLE="$(printf '%s\n' "$MSG" | head -1)"
+
+          for v in MOD_PATH ZIP_NAME ZIP_SHA EPOCH TITLE; do
+            if [ -z "${!v}" ]; then
+              echo "::error::tag ${TAG} carries no ${v}. This tag was not created by the publish tool, so there is nothing to build."
+              exit 1
+            fi
+          done
+          [ -d "$MOD_PATH" ] || { echo "::error::mod-path '${MOD_PATH}' is not in this tree"; exit 1; }
+
+          {
+            echo "tag=$TAG"
+            echo "mod_path=$MOD_PATH"
+            echo "zip_name=$ZIP_NAME"
+            echo "zip_sha=$ZIP_SHA"
+            echo "epoch=$EPOCH"
+            echo "title=$TITLE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild the archive, byte for byte
+        env:
+          MOD_PATH: ${{ steps.facts.outputs.mod_path }}
+          ZIP_NAME: ${{ steps.facts.outputs.zip_name }}
+          EPOCH: ${{ steps.facts.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          # Same recipe as the publish tool: fixed timestamp from the tag, sorted
+          # walk, directory entries included, fixed modes. Those four together are
+          # what make the output reproducible rather than merely correct.
+          python3 - "$MOD_PATH" "$ZIP_NAME" "$EPOCH" <<'PY'
+          import sys, zipfile, os, time
+          root, out, epoch = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          dt = time.gmtime(epoch)[:6]
+          base = os.path.dirname(root)
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+              for dirpath, dirnames, filenames in os.walk(root):
+                  dirnames.sort(); filenames.sort()
+                  rel = os.path.relpath(dirpath, base).replace(os.sep, "/") + "/"
+                  di = zipfile.ZipInfo(rel, date_time=dt)
+                  di.external_attr = (0o40755 << 16) | 0x10
+                  z.writestr(di, b"")
+                  for fn in filenames:
+                      full = os.path.join(dirpath, fn)
+                      zi = zipfile.ZipInfo(os.path.relpath(full, base).replace(os.sep, "/"),
+                                           date_time=dt)
+                      zi.compress_type = zipfile.ZIP_DEFLATED
+                      zi.external_attr = 0o644 << 16
+                      with open(full, "rb") as f:
+                          z.writestr(zi, f.read())
+          PY
+
+      - name: Prove it matches the archive that was tested
+        env:
+          ZIP_NAME: ${{ steps.facts.outputs.zip_name }}
+          ZIP_SHA: ${{ steps.facts.outputs.zip_sha }}
+        run: |
+          set -euo pipefail
+          GOT="$(sha256sum "$ZIP_NAME" | cut -d' ' -f1)"
+          echo "built $GOT"
+          echo "want  $ZIP_SHA"
+          if [ "$GOT" != "$ZIP_SHA" ]; then
+            echo "::error::rebuilt archive does not match the one that was tested. Refusing to publish it."
+            exit 1
+          fi
+          echo "match -- this is the same archive, byte for byte"
+
+      - name: Create the Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.facts.outputs.tag }}
+          TITLE: ${{ steps.facts.outputs.title }}
+          ZIP_NAME: ${{ steps.facts.outputs.zip_name }}
+          ZIP_SHA: ${{ steps.facts.outputs.zip_sha }}
+          MOD_PATH: ${{ steps.facts.outputs.mod_path }}
+        run: |
+          set -euo pipefail
+          # Idempotent: a re-run of an existing tag must not fail the workflow or
+          # silently make a second Release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; nothing to do."
+            exit 0
+          fi
+
+          BODY="$(mktemp)"
+          if [ -f "$MOD_PATH/CHANGELOG.md" ]; then
+            cat "$MOD_PATH/CHANGELOG.md" >> "$BODY"
+            printf '\n\n---\n\n' >> "$BODY"
+          fi
+          printf 'Install instructions and the full guide are in the repository.\n\n' >> "$BODY"
+          printf '`%s`\nsha256 `%s`\n' "$ZIP_NAME" "$ZIP_SHA" >> "$BODY"
+
+          gh release create "$TAG" "$ZIP_NAME" \
+            --title "$TITLE" \
+            --notes-file "$BODY"
+          echo "created $TAG"
+
+      - name: Prove the Release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.facts.outputs.tag }}
+          ZIP_NAME: ${{ steps.facts.outputs.zip_name }}
+        run: |
+          set -euo pipefail
+          # Exit 0 from the step above is not proof. Read it back, and read back
+          # the asset name too -- a Release with no asset is the failure that
+          # would otherwise look like success.
+          gh release view "$TAG" --json tagName,assets \
+            --jq '"tag=\(.tagName) assets=\(.assets | map(.name) | join(","))"' | tee /tmp/rv
+          grep -q "$ZIP_NAME" /tmp/rv || { echo "::error::Release exists but the archive is not attached"; exit 1; }
