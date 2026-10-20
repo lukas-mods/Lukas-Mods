@@ -130,7 +130,15 @@ jobs:
           fi
 
           BODY="$(mktemp)"
-          if [ -f "$MOD_PATH/CHANGELOG.md" ]; then
+          # Prefer hand-written notes for this tag. They live OUTSIDE the mod
+          # path on purpose: the step above rebuilds the zip from the mod tree and
+          # refuses to publish unless the sha matches the tag, so a file added
+          # inside that tree would make this workflow block its own release.
+          NOTES=".github/release-notes/${TAG}.md"
+          if [ -f "$NOTES" ]; then
+            cat "$NOTES" >> "$BODY"
+            printf '\n\n---\n\n' >> "$BODY"
+          elif [ -f "$MOD_PATH/CHANGELOG.md" ]; then
             cat "$MOD_PATH/CHANGELOG.md" >> "$BODY"
             printf '\n\n---\n\n' >> "$BODY"
           fi

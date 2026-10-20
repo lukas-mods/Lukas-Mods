@@ -34,7 +34,7 @@ body:
     attributes:
       label: Steps to Reproduce
       placeholder: |
-        1. Open Parts Manager on the tablet
+        1. Open the mod's app on the tablet or office computer
         2. Click ...
   - type: dropdown
     id: crash
