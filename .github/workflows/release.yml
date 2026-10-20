@@ -6,7 +6,27 @@
 # making a Release is what guarantees every byte it pushes runs the local
 # pre-push hook. Granting an API credential the rights to make Releases would
 # hand back a path into this repository that skips that hook. So the capability
-# lives HERE instead, in a token GitHub mints for one run and then destroys.
+# lives HERE instead, inside a workflow run, and on no machine anywhere.
+#
+# THE RELEASE IS PUBLISHED UNDER A PERSON'S NAME, AND THAT COSTS ONE TOKEN.
+# A Release is attributed to whoever's credential created it, and the token
+# GitHub mints for a run is attributed to a bot. Showing the real publisher
+# therefore needs a named token, which lives in this repository's Actions
+# secrets as RELEASE_PAT and nowhere else: never on a workstation, never in a
+# file, never in a clone. Three properties keep that honest, and each one is
+# in the steps below rather than in this comment:
+#   * It is fine-grained, scoped to THIS repository, Contents: write and the
+#     mandatory Metadata: read. That is the minimum a Release needs.
+#   * There is NO FALLBACK to the run's own token. A fallback would quietly
+#     restore the bot as the author while the run stayed green, which is worse
+#     than failing: a check that cannot fail teaches you to stop reading it.
+#   * The last step reads the author BACK and refuses any value but the
+#     expected one, so a swapped, expired or re-scoped token is caught by the
+#     run that used it rather than by someone noticing a byline months later.
+# A token expires, and an expiry announces itself at the worst possible moment.
+# That date is tracked deliberately OUTSIDE this repository, because a
+# scheduled workflow here would be disabled automatically after 60 days of
+# inactivity -- which is exactly the quiet stretch it would exist to cover.
 #
 # It is game- and mod-agnostic on purpose. Nothing below names a game, a mod or
 # a file; every value comes from the tag. The next mod needs no edit.
@@ -150,7 +170,13 @@ jobs:
 
       - name: Create the Release
         env:
-          GH_TOKEN: ${{ github.token }}
+          # THE NAMED TOKEN, DELIBERATELY NOT github.token. A Release is
+          # attributed to whoever's credential made it, and the token GitHub
+          # mints for a run is attributed to a bot. This one is fine-grained,
+          # scoped to this repository alone, Contents: write and nothing else,
+          # and it exists only as a repository secret -- never on a machine,
+          # never in a file, never in a clone.
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           TAG: ${{ steps.facts.outputs.tag }}
           TITLE: ${{ steps.facts.outputs.title }}
           ZIP_NAME: ${{ steps.facts.outputs.zip_name }}
@@ -158,6 +184,15 @@ jobs:
           MOD_PATH: ${{ steps.facts.outputs.mod_path }}
         run: |
           set -euo pipefail
+          # FAIL LOUDLY ON A MISSING SECRET. Unset, gh falls back to whatever
+          # else is in the environment: the byline silently reverts to a bot
+          # and the run still goes green. A check that cannot fail teaches you
+          # to stop reading it, so this refuses instead.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::RELEASE_PAT is not set on this repository, so the"
+            echo "::error::Release would be authored by a bot. Refusing."
+            exit 1
+          fi
           # Idempotent: a re-run of an existing tag must not fail the workflow or
           # silently make a second Release.
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -188,9 +223,13 @@ jobs:
 
       - name: Prove the Release exists
         env:
+          # Reading back needs no special rights, so this step keeps the
+          # run's own token. Least privilege: only the step that CREATES
+          # needs the named one.
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.facts.outputs.tag }}
           ZIP_NAME: ${{ steps.facts.outputs.zip_name }}
+          WANT_AUTHOR: ${{ vars.RELEASE_AUTHOR_LOGIN }}
         run: |
           set -euo pipefail
           # Exit 0 from the step above is not proof. Read it back, and read back
@@ -199,3 +238,24 @@ jobs:
           gh release view "$TAG" --json tagName,assets \
             --jq '"tag=\(.tagName) assets=\(.assets | map(.name) | join(","))"' | tee /tmp/rv
           grep -q "$ZIP_NAME" /tmp/rv || { echo "::error::Release exists but the archive is not attached"; exit 1; }
+
+          # ---- and read the AUTHOR back ------------------------------------
+          # The byline is the only thing the named token buys, so it is
+          # asserted rather than assumed: a swapped, expired or re-scoped
+          # token is then caught by the run that used it, instead of by
+          # somebody noticing the wrong name months later.
+          # An unset WANT_AUTHOR is a COULD NOT LOOK and says so. It is not a
+          # pass: "nothing to compare against" and "it matched" are opposite
+          # answers.
+          GOT_AUTHOR="$(gh release view "$TAG" --json author --jq '.author.login')"
+          echo "release author: ${GOT_AUTHOR}"
+          if [ -z "${WANT_AUTHOR:-}" ]; then
+            echo "::warning::RELEASE_AUTHOR_LOGIN is not set, so the author was"
+            echo "::warning::read (${GOT_AUTHOR}) but could not be checked."
+          elif [ "$GOT_AUTHOR" != "$WANT_AUTHOR" ]; then
+            echo "::error::Release is authored by ${GOT_AUTHOR}, expected ${WANT_AUTHOR}."
+            echo "::error::The token used is not the one this repository intends."
+            exit 1
+          else
+            echo "author matches ${WANT_AUTHOR}"
+          fi
