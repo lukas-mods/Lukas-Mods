@@ -78,7 +78,7 @@ jobs:
           # Every part comes from the TAG, so this names no game and no mod and
           # needs no edit for the next one. The first automated Release got this
           # wrong -- it used the annotation's first line, which is a summary and
-          # not a title -- and Aaron corrected the headline by hand on 2026-10-20.
+          # not a title -- and that headline was corrected by hand afterwards.
           # An explicit `release-title:` line in the annotation wins, for a name
           # the word split would get wrong, such as an acronym run.
           TITLE="$(get release-title)"
