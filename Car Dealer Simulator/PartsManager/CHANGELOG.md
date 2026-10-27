@@ -2,6 +2,11 @@
 
 Released versions only.
 
+## 1.1.1 - New Supply Tiers
+
+- The Workshop tab now carries the newer supply tiers from the game's "New Materials & Manager Features" update. Each supply's Tier button switches between Basic and three more: Large, Range+ and Eco-friendly. Discs have Extra Durable in place of Large, and polisher pads have Extra and Eco. Add and Auto Supplies buy the tier you pick.
+- The Tier button is wider and shows the tier name with an arrow, so the longer names fit and it's clear a click moves to the next tier.
+
 ## 1.1 - Workshop Supplies and Fuel Delivery
 
 Needs the game's "Workshop Upgrades & Sprint Racing" update (October 2026) or later.

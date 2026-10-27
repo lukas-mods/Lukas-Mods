@@ -1,4 +1,4 @@
-Parts Manager v1.1 -- by Luka's Mods
+Parts Manager v1.1.1 -- by Luka's Mods
 Car Dealer Simulator UE4SS mod
 
 WHAT IT DOES
@@ -17,7 +17,10 @@ straight into storage:
     2 cars buys 8.
   * Workshop supplies (Workshop tab): soap, wax, polish, grinder discs,
     putty, oscillating polisher pads and paint for the car wash and body
-    shop. Add buys 10 of a supply.
+    shop. Add buys 10 of a supply. Each row's Tier button picks which of the
+    game's tiers to buy: Basic, Large, Range+ or Eco-friendly (discs have
+    Extra Durable in place of Large, and polisher pads have Extra and Eco).
+    Add and Auto Supplies buy that tier.
   * Fuel Delivery (Fuel Delivery tab): fills your Gas Pump Hub's tanks at the
     gas station's price per gallon, without the drive. One tank unlocks per
     hub level. Needs the Gas Pump Hub upgrade and your own mobile fuel tank
@@ -81,9 +84,9 @@ INSTALL -- WINDOWS
 
 INSTALL -- LINUX / STEAM DECK (PROTON)
   Status: partly tested, on 1.0 only. Under Proton, UE4SS and the mod loaded
-  and attached to the tablet; buying, auto-stock and the 1.1 features have
-  not been tested there. If you try it, please report how it went (see
-  "Report a Bug" below).
+  and attached to the tablet; buying, auto-stock and the 1.1 and 1.1.1
+  features have not been tested there. If you try it, please report how it
+  went (see "Report a Bug" below).
   1. Install UE4SS and this mod into the same folders as on Windows (inside
      the game's Steam install folder).
   2. In Steam: right-click Car Dealer Simulator > Properties > General >
@@ -98,7 +101,7 @@ CHECK THAT IT LOADED
       ...\Binaries\Win64\ue4ss\UE4SS.log
   It should contain:
       Mod 'PartsManager' has enabled.txt, starting mod.
-      [PartsManager] v1.1 loaded
+      [PartsManager] v1.1.1 loaded
   In the game, a blue Parts Manager icon appears on the tablet and on the
   office computer's taskbar once a save has loaded -- not on the main menu,
   so don't look for it there.

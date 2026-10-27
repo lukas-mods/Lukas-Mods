@@ -1,5 +1,5 @@
 --[[
-    Parts Manager v1.1 -- by Luka's Mods  (live edits number the VERSION below)
+    Parts Manager v1.1.1 -- by Luka's Mods  (live edits number the VERSION below)
 
     Adds a "Parts Manager" app to the in-game tablet and the office
     computer. It shows what is in your warehouse storage and how many complete
@@ -28,7 +28,7 @@
 --]]
 
 local MOD = "PartsManager"
-local VERSION = "1.1"  -- live-edit number: the log names the code that ran
+local VERSION = "1.1.1"  -- live-edit number: the log names the code that ran
 local function log(msg) print("[" .. MOD .. "] " .. tostring(msg) .. "\n") end
 
 -- Trace logging, off by default: debug_trace=1 in settings.txt turns on the
@@ -62,9 +62,12 @@ local PRODUCT_TABLES = {
     { path = "/Game/CarDealerSim/DataAssets/Products/DT_Fluids.DT_Fluids", group = "fluid" },
     { path = "/Game/CarDealerSim/DataAssets/Products/DT_Components.DT_Components", group = "component" },
     { path = "/Game/CarDealerSim/DataAssets/Products/DT_FusesParts.DT_FusesParts", group = "fuse" },
-    -- Workshop supplies (game build 25989974): soap, wax, polish, discs, putty,
-    -- pads, paint. Row IDs carry the tier as a suffix (Wax_Base = Wax - Basic).
+    -- Workshop supplies: soap, wax, polish, discs, putty, pads, paint. Row IDs
+    -- carry the tier as a suffix (Wax_Base = Wax - Basic). The first table holds
+    -- the Basic tier; _Special holds the others (Large, Range+, Eco-friendly,
+    -- Extra Durable), whose labels come from the product names, not the suffix.
     { path = "/Game/CarDealerSim/DataAssets/Products/DT_ConsumableMaterials.DT_ConsumableMaterials", group = "supply" },
+    { path = "/Game/CarDealerSim/DataAssets/Products/DT_ConsumableMaterials_Special.DT_ConsumableMaterials_Special", group = "supply" },
 }
 -- Body work rather than mechanical parts: bought with the consumables.
 local BODY_PARTS = { Windshield = true }
@@ -472,7 +475,7 @@ local function stock_of(counts, e)
 end
 
 -- How many count toward builds and auto-stock (worn ones only if the
--- "Count Parts Needing Repair" setting is on).
+-- "Count Worn Parts" setting is on).
 local function usable(counts, e)
     local ready, repair = stock_of(counts, e)
     return ready + (settings.countWorn and repair or 0)
@@ -1652,8 +1655,9 @@ end
 -- Workshop supplies list: one row per supply (its chosen tier), same look as
 -- the parts list. Columns, then the tier and buy buttons at a fixed width.
 -- (No Tier column: the Tier button in each row names the tier.)
+-- The Tier button fits the longest label, "Extra Durable  >".
 local SUPPLY_COLUMNS = { { "Supply", 3.0 }, { "Price", 0.8 }, { "In Storage", 1.0 }, { "Carried", 0.9 } }
-local SUPPLY_CONTROLS_WIDTH = 450
+local SUPPLY_CONTROLS_WIDTH = 510
 
 local function rebuild_supply_rows(h, groups)
     local list = hw(h, "slist")
@@ -1687,7 +1691,11 @@ local function rebuild_supply_rows(h, groups)
             valign(slot, 2)
             r.b[name] = rec
         end
-        rbutton("tier", "Tier", 180, "srowtier:" .. g.key, COLORS.btnOff)
+        rbutton("tier", "Tier", 240, "srowtier:" .. g.key, COLORS.btnOff)
+        if #g.tiers > 1 then
+            local tb = resolve(r.b.tier.b)
+            if tb then pcall(function() tb:SetToolTipText(FText("Click for the next tier.")) end) end
+        end
         rbutton("add", "Add", 240, "srowadd:" .. g.key, COLORS.btn)
         local rs = list:AddChild(bg)
         pad(rs, 0, 0, 0, 2)
@@ -2360,8 +2368,13 @@ local function refresh_panel(h)
             local enough = settings.supplyOn and have >= settings.supplyTarget
             set_text(resolve(r.cells[3]), tostring(have), (have == 0 and COLORS.bad) or (enough and COLORS.good) or COLORS.text)
             set_text(resolve(r.cells[4]), tostring(cn), cn > 0 and COLORS.text or COLORS.dim)
-            -- One tier: the button only names it. More: it switches between them.
-            style_button(r.b.tier, "Tier: " .. t.label, #g.tiers > 1 and COLORS.btnOff or COLORS.btnLocked)
+            -- One tier: the button only names it. More: it steps to the next
+            -- one, and the trailing arrow says so (it never goes back).
+            if #g.tiers > 1 then
+                style_button(r.b.tier, t.label .. "  >", COLORS.btnOff)
+            else
+                style_button(r.b.tier, t.label, COLORS.btnLocked)
+            end
             if e.avail then
                 style_button(r.b.add, string.format("Add %d  (%s)", SUPPLY_PACK, money_text(SUPPLY_PACK * e.price)), COLORS.btn)
             else
@@ -2917,7 +2930,7 @@ end
 -- paused") can't be missed. Requested with queue_alert(); delivered from the
 -- main loop once the HUD exists.
 --
--- No in-game email any more (0.11 RC): an email added with economy:AddMail
+-- No in-game email any more: an email added with economy:AddMail
 -- filled only 8 of S_MailData's 13 fields, and on game build 25832017 the next
 -- autosave crashed every time.
 
