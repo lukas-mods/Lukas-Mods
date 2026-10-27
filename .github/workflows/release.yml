@@ -92,6 +92,25 @@ jobs:
           done
           [ -d "$MOD_PATH" ] || { echo "::error::mod-path '${MOD_PATH}' is not in this tree"; exit 1; }
 
+          # OPTIONAL, AND THE DEFAULT IS THE HISTORICAL BEHAVIOUR. Every archive
+          # built by the publish tool carries file entries at 0o644, with no
+          # regular-file type bit -- CDS-PartsManager-1.1.1 and
+          # CDS-SteamAchievements-1.0.1 were both measured that way. DWMB 1.0.0
+          # was hand-assembled before the tool existed and carries 0o100644, so
+          # its zip-sha256 is unreproducible here without this fact. A tag that
+          # does not carry the fact gets 644 and behaves exactly as before.
+          #
+          # 🚨 THIS IS THE FIRST FACT THAT CHANGES THE BUILD RATHER THAN NAMING
+          # ITS INPUTS, AND A TAG ANNOTATION IS FREE TEXT, so the value is
+          # whitelisted to the two modes that can legitimately occur and is
+          # passed to python as ARGV -- never interpolated into the heredoc.
+          ZIP_MODE="$(get zip-file-mode)"
+          [ -n "$ZIP_MODE" ] || ZIP_MODE=644
+          case "$ZIP_MODE" in
+            644|100644) ;;
+            *) echo "::error::zip-file-mode '${ZIP_MODE}' is not one of 644, 100644. Refusing to build."; exit 1 ;;
+          esac
+
           # The Release headline follows the convention the first two Releases
           # set by hand:
           #     LukasMods - <GAME> - <Mod Name> <version>
@@ -118,6 +137,7 @@ jobs:
             echo "zip_name=$ZIP_NAME"
             echo "zip_sha=$ZIP_SHA"
             echo "epoch=$EPOCH"
+            echo "zip_mode=$ZIP_MODE"
             echo "title=$TITLE"
           } >> "$GITHUB_OUTPUT"
 
@@ -126,14 +146,17 @@ jobs:
           MOD_PATH: ${{ steps.facts.outputs.mod_path }}
           ZIP_NAME: ${{ steps.facts.outputs.zip_name }}
           EPOCH: ${{ steps.facts.outputs.epoch }}
+          ZIP_MODE: ${{ steps.facts.outputs.zip_mode }}
         run: |
           set -euo pipefail
           # Same recipe as the publish tool: fixed timestamp from the tag, sorted
           # walk, directory entries included, fixed modes. Those four together are
           # what make the output reproducible rather than merely correct.
-          python3 - "$MOD_PATH" "$ZIP_NAME" "$EPOCH" <<'PY'
+          python3 - "$MOD_PATH" "$ZIP_NAME" "$EPOCH" "$ZIP_MODE" <<'PY'
           import sys, zipfile, os, time
           root, out, epoch = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          # Base 8. The shell has already refused anything but 644 or 100644.
+          file_mode = int(sys.argv[4], 8)
           dt = time.gmtime(epoch)[:6]
           base = os.path.dirname(root)
           with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
@@ -148,7 +171,7 @@ jobs:
                       zi = zipfile.ZipInfo(os.path.relpath(full, base).replace(os.sep, "/"),
                                            date_time=dt)
                       zi.compress_type = zipfile.ZIP_DEFLATED
-                      zi.external_attr = 0o644 << 16
+                      zi.external_attr = file_mode << 16
                       with open(full, "rb") as f:
                           z.writestr(zi, f.read())
           PY
@@ -157,10 +180,14 @@ jobs:
         env:
           ZIP_NAME: ${{ steps.facts.outputs.zip_name }}
           ZIP_SHA: ${{ steps.facts.outputs.zip_sha }}
+          ZIP_MODE: ${{ steps.facts.outputs.zip_mode }}
         run: |
           set -euo pipefail
           GOT="$(sha256sum "$ZIP_NAME" | cut -d' ' -f1)"
-          echo "built $GOT"
+          # The mode is printed BESIDE the sha, so a future failure shows at a
+          # glance whether the knob was in play rather than looking like a
+          # corrupted tree.
+          echo "built $GOT  (file mode ${ZIP_MODE})"
           echo "want  $ZIP_SHA"
           if [ "$GOT" != "$ZIP_SHA" ]; then
             echo "::error::rebuilt archive does not match the one that was tested. Refusing to publish it."
