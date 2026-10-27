@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting! If you used the in-game **Report a Bug** button, a report file was saved and its folder opened for you. Please drag that file into the **Report File** box below.
+        Thanks for reporting! If you used a mod's in-game **Report a Bug** button, a report file was saved and its folder opened for you. Please drag that file into the **Report File** box below. A mod without that button asks for its log instead (its guide says which).
   - type: input
     id: mod
     attributes:
@@ -54,9 +54,9 @@ body:
     id: other_mods
     attributes:
       label: Other Mods Installed
-      description: Which other mods are in your ue4ss\Mods\ folder? Add their versions if you know them.
+      description: Which other mods do you have? For UE4SS mods, that's your ue4ss\Mods\ folder; for BepInEx mods, BepInEx\plugins\. Add their versions if you know them.
   - type: textarea
     id: report
     attributes:
       label: Report File
-      description: Drag the report .txt here (from the in-game Report a Bug button). If the game crashed, also paste the crash message text.
+      description: Drag the report .txt here (from the in-game Report a Bug button). For a mod without that button, drag in its log instead, e.g. BepInEx\LogOutput.log for BepInEx mods, and remove your Windows user name from it if it shows up. If the game crashed, also paste the crash message text.

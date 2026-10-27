@@ -56,9 +56,27 @@ Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS: [the
 
 ---
 
+## Star Trek: Outposts Unknown
+
+### Dude, Where's My Buggy?
+
+<p align="center">
+  <img src=".github/assets/dude-wheres-my-buggy-hero.jpg" width="720" alt="A Cargo Buggy's route in its info panel">
+</p>
+
+Click a Cargo Buggy to see its whole route: each pickup and delivery stop in order, what it's moving, and which stop it's on. Display only: buggies drive as before.
+
+**[Download on Nexus Mods](https://www.nexusmods.com/startrekoutpostsunknown/mods/1)** · **[Full Guide](guides/star-trek-outposts-unknown/dude-wheres-my-buggy.md)** · **[Release 1.0.0](../../releases/tag/STOU-DudeWheresMyBuggy-1.0.0)**
+
+Needs the Steam version of the game and BepInEx 6.0.0-be.790 (Unity IL2CPP), the exact build it was tested with: [BepInEx's build site](https://builds.bepinex.dev/projects/bepinex_be), build #790.
+
+<sub>Star Trek and related marks and logos are trademarks of CBS Studios Inc. This mod is not made by, affiliated with or endorsed by CBS Studios, Paramount, Playstack or Magic Fuel Games.</sub>
+
+---
+
 ## Found a Problem, or Have an Idea?
 
-Use the **Report a Bug** or **Request a Feature** button in the mod's in-game app. Or open an [issue](../../issues/new/choose) here using the bug report or feature request form.
+If the mod has its own in-game app, use its **Report a Bug** or **Request a Feature** button. For any mod, you can also [open a GitHub issue](../../issues/new/choose) and pick the **Bug Report** or **Feature Request** form, or post on the mod's Nexus page. GitHub needs a free account.
 
 ---
 
