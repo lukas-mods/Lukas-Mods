@@ -8,7 +8,11 @@
 
 ---
 
-## Car Dealer Simulator
+<p align="center">
+  <img src=".github/assets/lukas-mods-cds-logo.png" width="200" alt="Luka's Mods Car Dealer Simulator logo">
+</p>
+
+<h2 align="center">Car Dealer Simulator</h2>
 
 ### Parts Manager
 
@@ -56,7 +60,11 @@ Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS: [the
 
 ---
 
-## Star Trek: Outposts Unknown
+<p align="center">
+  <img src=".github/assets/lukas-mods-stou-logo.png" width="200" alt="Luka's Mods Star Trek: Outposts Unknown logo">
+</p>
+
+<h2 align="center">Star Trek: Outposts Unknown</h2>
 
 ### Dude, Where's My Buggy?
 
