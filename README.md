@@ -78,6 +78,25 @@ Click a Cargo Buggy to see its whole route: each pickup and delivery stop in ord
 
 Needs the Steam version of the game and BepInEx 6.0.0-be.790 (Unity IL2CPP), the exact build it was tested with: [BepInEx's build site](https://builds.bepinex.dev/projects/bepinex_be), build #790.
 
+---
+
+### Quarters Master
+
+<p align="center">
+  <img src=".github/assets/quarters-master-hero.jpg" width="720" alt="A crew card's QUARTERS row reading SHIP, beside a habitat's crew picker">
+</p>
+
+**See Where Your Crew Sleeps.** Habitat pickers badge crew portraits with the game's planet or ship icon, and crew cards get a QUARTERS row.
+
+- **Badges in the Habitat Picker:** the game's own planet icon for crew who have a bed in a habitat, or its ship icon for crew who sleep aboard the ship.
+- **Crew Without a Habitat Bed Come First:** the habitat picker lists crew who don't have a bed in a habitat (such as ship sleepers) first. Everyone else follows in the game's own order.
+- **A QUARTERS Row on Crew Cards:** under STATIONED, the planet's name for crew in a habitat, or SHIP. On the hover card, the crew info panel and the worker tooltip.
+- **Display Only:** it doesn't assign, move or unassign anyone.
+
+**[Download on Nexus Mods](https://www.nexusmods.com/startrekoutpostsunknown/mods/3)** · **[Full Guide](guides/star-trek-outposts-unknown/quarters-master.md)** · **[Release 1.0.0](../../releases/tag/STOU-QuartersMaster-1.0.0)**
+
+Needs the Steam version of the game and BepInEx 6.0.0-be.790 (Unity IL2CPP), the exact build it was tested with: [our BepInEx pack on Nexus Mods](https://www.nexusmods.com/startrekoutpostsunknown/mods/2). Works alongside Dude, Where's My Buggy?
+
 <sub>Star Trek and related marks and logos are trademarks of CBS Studios Inc. This mod is not made by, affiliated with or endorsed by CBS Studios, Paramount, Playstack or Magic Fuel Games.</sub>
 
 ---
