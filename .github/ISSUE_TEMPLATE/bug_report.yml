@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting! If you used a mod's in-game **Report a Bug** button, a report file was saved and its folder opened for you. Please drag that file into the **Report File** box below. A mod without that button asks for its log instead (its guide says which).
+        Thanks for reporting! If you used a mod's in-game **Report a Bug** button, a report file was saved and the mod showed you where. Please drag that file into the **Report File** box below. A mod without that button asks for its log instead (its guide says which).
   - type: input
     id: mod
     attributes:

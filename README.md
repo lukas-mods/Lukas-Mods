@@ -60,6 +60,24 @@ Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS: [the
 
 ---
 
+### Installed Mods
+
+<p align="center">
+  <img src=".github/assets/installed-mods-hero.jpg" width="720" alt="The Installed Mods page listing seven mods, one of them switched off">
+</p>
+
+**Switch Mods From the Title Menu.** Installed Mods adds an INSTALLED MODS button to the game's title menu.
+
+- **Every Mod You Have:** each UE4SS mod in your Mods folder, with whether it's on or off and its version when the mod gives one.
+- **Switch On or Off:** click Turn On or Turn Off, then Apply. Changes take effect the next time you start the game.
+- **Quit When You're Ready:** after Apply, a box offers to quit the game now.
+- **Only the Switch:** Apply renames a mod's enabled.txt, and nothing else in a mod's folder is touched.
+
+**[Download on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/59)** · **[Full Guide](guides/car-dealer-simulator/installed-mods.md)** · **[Release 1.0](../../releases/tag/CDS-InstalledMods-1.0)**
+
+Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS, the same one Parts Manager uses: [the one on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/53). No DLC needed. Using Vortex? Set Car Dealer Simulator to be managed by Vortex and drop the zip in: it installs the mod, and UE4SS if it's missing.
+---
+
 <p align="center">
   <img src=".github/assets/lukas-mods-stou-logo.png" width="200" alt="Luka's Mods Star Trek: Outposts Unknown logo">
 </p>
