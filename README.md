@@ -76,6 +76,7 @@ Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS: [the
 **[Download on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/59)** · **[Full Guide](guides/car-dealer-simulator/installed-mods.md)** · **[Release 1.0](../../releases/tag/CDS-InstalledMods-1.0)**
 
 Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS, the same one Parts Manager uses: [the one on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/53). No DLC needed. Using Vortex? Set Car Dealer Simulator to be managed by Vortex and drop the zip in: it installs the mod, and UE4SS if it's missing.
+
 ---
 
 <p align="center">
