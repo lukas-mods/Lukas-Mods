@@ -77,6 +77,23 @@ Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS: [the
 
 Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS, the same one Parts Manager uses: [the one on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/53). No DLC needed. Using Vortex? Set Car Dealer Simulator to be managed by Vortex and drop the zip in: it installs the mod, and UE4SS if it's missing.
 
+### Automation Manager
+
+<p align="center">
+  <img src=".github/assets/automation-manager-hero.jpg" width="720" alt="Automation Manager's Board: a map of the shop from above, showing each station's state, the cars in it, and the platform's line, Driving · Apex Motors Vanguard">
+</p>
+
+**Profiles for the Automation Platform.** Automation Manager adds an app to the tablet and the office computer.
+
+- **Profiles:** which stations a car visits and where it finishes. Give a car near the warehouse a profile, and it gets its task through the game's own Add Automation Task.
+- **Board:** your shop from above, with each car where it is and what the platform is doing. Reset Car takes one stuck car out of automation and every other car keeps its task.
+- **Car Pickup:** Add Bought Cars fills the transporter's list for you, and Send Now sends it with what's on it.
+- **Post for Sale:** a profile can price a car to a Competitiveness level and post it for you, through the game's own ad call.
+
+**[Download on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/60)** · **[Full Guide](guides/car-dealer-simulator/automation-manager.md)** · **[Release 1.0](../../releases/tag/CDS-AutomationManager-1.0)**
+
+Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS, the same one Parts Manager uses: [the one on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/53), whose log says `UE4SS - v3.0.1 Beta #0 - Git SHA #44afb36d`. The "Up 2 You" DLC is optional, for Sport and Race parts.
+
 ---
 
 <p align="center">
