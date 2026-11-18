@@ -1,4 +1,4 @@
-Automation Manager v1.0 -- by Luka's Mods
+Automation Manager v1.0.1 -- by Luka's Mods
 Car Dealer Simulator UE4SS mod
 
 WHAT IT DOES
@@ -13,10 +13,12 @@ shop at a glance:
     Compressor, Fuel Dispenser), the paint colour, and where the car
     finishes (Front Parking, Side Parking, Underground Garage or Tuning
     Garage). The mechanic step can Replace Damaged parts with one part type,
-    use Custom (a part type for every slot, all of them set, the parts taken
-    from your storage when the task is added, all or nothing), or
-    Disassemble the car. Stations a car doesn't need are skipped, by the
-    game's own tests. Profiles can be renamed.
+    use Custom (a part type for every slot; the car gets its task only once
+    every part it needs is in storage), or Disassemble the car. The parts,
+    fuses and fluids come from your storage, picked the way the game's own
+    Automation tab picks them. Stations a car doesn't need are skipped, by
+    the game's own tests, and so is the mechanic when there's nothing for it
+    to do. Profiles can be renamed.
   * Give a car on a parking spot near the warehouse a profile, and it gets
     its automation task through the game's own Add Automation Task.
     Select Cars (or Shift-click) gives several cars the same profile.
@@ -67,7 +69,7 @@ Each page has a one-line hint, and Help in the app explains every part.
 
 REQUIREMENTS
   * Car Dealer Simulator on PC. Tested on the Steam version, game build
-    26565045. The Microsoft Store / Xbox PC version is untested, and UE4SS
+    26731899. The Microsoft Store / Xbox PC version is untested, and UE4SS
     installs differently there.
   * UE4SS (the mod loader), an EXPERIMENTAL build: the game runs on Unreal
     Engine 5.4, which the stable UE4SS release doesn't support. Tested with
@@ -88,7 +90,7 @@ USE AT YOUR OWN RISK
       %LOCALAPPDATA%\CarDealerSimulator\Saved\
   Copy that folder somewhere safe.
   Automation Manager starts real tasks on your cars, takes parts from your
-  storage for Custom profiles, and posts real ads at the price it works
+  storage for the mechanic, and posts real ads at the price it works
   out. Check a profile before you give it to a car.
   You use this mod at your own risk.
 
@@ -124,7 +126,7 @@ CHECK THAT IT LOADED
       ...\Binaries\Win64\ue4ss\UE4SS.log
   It should contain:
       Mod 'AutomationManager' has enabled.txt, starting mod.
-      [AutomationManager] v1.0 (... B, sum ...) loaded (running)
+      [AutomationManager] v1.0.1 (... B, sum ...) loaded (running)
   In the game, the Automation Manager app appears on the tablet and on the
   office computer once a save has loaded -- not on the main menu.
 

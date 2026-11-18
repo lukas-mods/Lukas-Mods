@@ -2,6 +2,17 @@
 
 Released versions only.
 
+## 1.0.1 - Mechanic Fixes
+
+Bug fixes from player reports. No new features.
+
+- Replace Damaged now works: the mechanic gets the parts, fuses and fluids to change, picked from your storage the way the game's own Automation tab picks them. Before, the car went to the mechanic with nothing to do and came back untouched.
+- Disassemble now takes the parts and fuses off and drains the fluids.
+- Custom now changes fuses and fluids too, and fits parts that are missing. The windshield is replaced when it needs it.
+- A car with nothing for the mechanic to do now skips the mechanic and gets the rest of its profile, instead of riding to the mechanic for nothing.
+- Parts picked for a job that doesn't go ahead go back to storage.
+- If a car's task is removed before the platform picks the car up (for example by another mod), the car is no longer treated as finished.
+
 ## 1.0 - First Release
 
 First public release. Automation Manager adds an app to the tablet and the office computer that sets up your cars' automation tasks and shows the whole shop at a glance.

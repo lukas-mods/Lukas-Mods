@@ -10,7 +10,7 @@
 -- New file-level state goes into an existing table, not a new local, and
 -- every change is checked with luac -p before it ships.
 local MOD = "AutomationManager"
-local VERSION = "1.0"
+local VERSION = "1.0.1"
 local function log(msg) print("[" .. MOD .. "] " .. tostring(msg) .. "\n") end
 
 ---------------------------------------------------------------------------
@@ -577,7 +577,9 @@ end
 
 -- Adds a task built from the profile. Parts for a Custom profile are added
 -- separately (add_custom_parts) while the task is still queued.
-local function apply_profile(car, profileName)
+-- opts.noMech: the car gets the profile's task without its mechanic step
+-- (the mechanic has nothing to change on it); every other station still runs.
+local function apply_profile(car, profileName, opts)
     local p = profile_of(profileName)
     if not p then return false, "no profile " .. tostring(profileName) end
     local robot = robot_now()
@@ -600,6 +602,11 @@ local function apply_profile(car, profileName)
     -- tried again rather than getting a task with stations guessed away.
     if not needs then return false, "car record unreadable" end
     local want = want_from_profile(p, needs)
+    if opts and opts.noMech then
+        want.AutomationSteps.MechanicalWorkshop = false
+        want.MechanicalWorkshop = { ReplaceAllDamagedParts = false, CustomizedPartSelection = false,
+            DisassembleEverything = false, PartType = want.MechanicalWorkshop.PartType }
+    end
     local skipped = {}
     for _, st in ipairs({ "GasPump", "Compressor", "BodyWorkshop", "CarWash", "PaintBooth" }) do
         if (p.steps or {})[st] and not want.AutomationSteps[st] then skipped[#skipped + 1] = st end
@@ -743,6 +750,23 @@ local function storage_by_class(st)
         end)
     end)
     if not ok then return nil, bad end
+    -- Only parts in full condition count, best last (taken first by
+    -- table.remove): storage also holds worn parts taken off cars, and a
+    -- Custom job once refitted a car's own 7% clutch. Durability reads as a
+    -- fraction or a percentage depending on the part, so either full mark counts.
+    local function dur(it)
+        local okD, d = pcall(function() return it.Durability end)
+        return (okD and type(d) == "number") and d or -1
+    end
+    for cn, list in pairs(byClass) do
+        local fresh = {}
+        for _, it in ipairs(list) do
+            local d = dur(it)
+            if (d >= 0.995 and d <= 1.005) or d >= 99.5 then fresh[#fresh + 1] = it end
+        end
+        table.sort(fresh, function(a, b) return dur(a) < dur(b) end)
+        byClass[cn] = fresh
+    end
     return byClass, bad
 end
 
@@ -997,6 +1021,294 @@ local salePending = {}
 local function intake_tick()
     local robot = robot_now()
     if not robot then return end
+    -- The parts, fuses and fluids for a Replace Damaged job, picked by the
+    -- game's own mechanic dialogue the way its automation page does: open the
+    -- dialogue on the car, choose the part type, press Replace All, read the
+    -- worker's picks, then clear them and close. The robot and the mechanic
+    -- act only on these lists, so a job without them is closed with no work.
+    -- Returns { storage = {slot -> part}, fluids = {kind -> value}, fuses = {...}, n = count } or nil and why.
+    local function plan_parts(car, partType, mode)
+        local info = info_by_id(car)
+        local worker = first_live("BP_Worker_MechanicalWorkshop_C")
+        if not info then return nil, "car record unreadable" end
+        if not worker then return nil, "no mechanic hired" end
+        local function step(name, fn)
+            local ok, err = pcall(fn)
+            return ok, name .. "=" .. (ok and "ok" or tostring(err):gsub("^.-main%.lua:%d+: ", ""):sub(1, 200))
+        end
+        local trail = {}
+        local function run(name, fn)
+            local ok, line = step(name, fn)
+            trail[#trail + 1] = line
+            return ok
+        end
+        -- CreateDialogue (one out-parameter, the widget) rather than
+        -- CreateSimpleDialogue, whose out-delegates UE4SS can't store into.
+        local o1 = {}
+        run("keep", function() worker:AutomationBuforAlreadyScheduledParts() end)
+        run("open", function() worker:CreateDialogue(o1) end)
+        local okD, dlg = pcall(function() return worker.DialogueWidget end)
+        if not (okD and valid(dlg)) then dlg = out_field("Widget", o1) end
+        local plan, picked = nil, nil
+        if valid(dlg) then
+            run("hide", function() dlg:SetVisibility(2) end)
+            if run("setup", function() dlg["Schedule Mechanical Work"](dlg, info, worker, true) end)
+                and run("type", function() dlg.WBP_SwitchCarPartSelector:SelectOption(partType) end)
+                and run(mode == "disassemble" and "disassembleAll" or "replaceAll", function()
+                    if mode == "disassemble" then dlg:ForceClickDissasembleAll() else dlg:ForceClickReplaceAll() end
+                end) then
+                local outs = { {}, {}, {}, {}, {}, {} }
+                if run("read", function() worker:GetCarPartsToChange(outs[1], outs[2], outs[3], outs[4], outs[5], outs[6]) end) then
+                    -- UE4SS hands map out-parameters back as plain Lua tables whose
+                    -- keys and values are handles into the call's own memory, gone
+                    -- once it returns: writing those into the task crashed the game.
+                    -- So each one is resolved here, at once: a key to its text (or
+                    -- number), a value to the object or plain value it holds.
+                    local bad = 0
+                    local function resolve(h)
+                        local okG, got = pcall(function() return h:get() end)
+                        if okG then h = got end
+                        if type(h) == "userdata" and not valid(h) then
+                            local okT, txt = pcall(function() return h:ToString() end)
+                            if okT and type(txt) == "string" then return txt end
+                        end
+                        return h
+                    end
+                    local function tbl(n)
+                        local v = out_field(n, table.unpack(outs))
+                        local t = {}
+                        local function put(k, x)
+                            local key, val = resolve(k), resolve(x)
+                            if type(key) ~= "string" and type(key) ~= "number" then bad = bad + 1 return end
+                            t[key] = val
+                        end
+                        if type(v) == "table" then for k, x in pairs(v) do put(k, x) end
+                        elseif v ~= nil then pcall(function() v:ForEach(put) end) end
+                        return t
+                    end
+                    -- The two name lists (fuses to swap, parts to take off), kept in order.
+                    local function names(n)
+                        local t, out = tbl(n), {}
+                        local idx = {}
+                        for k in pairs(t) do idx[#idx + 1] = k end
+                        table.sort(idx, function(a, b) return tostring(a) < tostring(b) end)
+                        for _, k in ipairs(idx) do
+                            local v = t[k]
+                            if type(v) == "string" then out[#out + 1] = v else bad = bad + 1 end
+                        end
+                        return out
+                    end
+                    -- Array out-parameters don't come back from UE4SS at all (the
+                    -- take-off list read empty on a Disassemble), so the two name
+                    -- lists are read from the worker's own fields, before the clear.
+                    local function worker_names(field, fallback)
+                        local out, okA, arr = {}, pcall(function() return worker[field] end)
+                        if okA and arr then
+                            pcall(function()
+                                for i = 1, #arr do
+                                    local e = arr[i]
+                                    local okE, ev = pcall(function() return e:get() end)
+                                    if okE then e = ev end
+                                    local okT, txt = pcall(function() return e:ToString() end)
+                                    out[#out + 1] = (okT and type(txt) == "string") and txt or text_of(e)
+                                end
+                            end)
+                        end
+                        if #out == 0 then out = names(fallback) end
+                        return out
+                    end
+                    -- Each part row's condition as the dialogue shows it, by slot:
+                    -- a fallback for Custom's all-or-nothing check.
+                    local cond = {}
+                    for _, rn in ipairs({ "Battery", "BrakeClipLF", "BrakeClipLR", "BrakeClipRF", "BrakeClipRR", "BrakeDiscLF",
+                        "BrakeDiscLR", "BrakeDiscRF", "BrakeDiscRR", "Clutch", "Engine", "ExhaustCatalyticConverter",
+                        "ExhaustMainfold", "ExhaustMuffer", "ExhaustResonator", "ExhaustTailPipe", "Intercooler",
+                        "ShockAbsorberLF", "ShockAbsorberLR", "ShockAbsorberRF", "ShockAbsorberRR", "SuspensionPinLF",
+                        "SuspensionPinRF", "Windshield" }) do
+                        pcall(function()
+                            local row = dlg["CarPart_" .. rn]
+                            if not valid(row) then return end
+                            local key = text_of(row.CarPartIndex)
+                            local inst = row.IsCarPartInstalled
+                            -- The row's condition is only kept as the text it shows
+                            -- ("79%"); the game's own condition call returns its state
+                            -- struct as an out-parameter, which UE4SS doesn't hand back.
+                            local txt = ""
+                            pcall(function() txt = row.Text_InstalledDuration:GetText():ToString() end)
+                            local num = tostring(txt):match("(%d+[%.,]?%d*)%s*%%")
+                            local pct = num and tonumber((num:gsub(",", "."))) or nil
+                            if key and key ~= "" then cond[key] = { d = pct and pct / 100 or nil, installed = inst, txt = txt } end
+                        end)
+                    end
+                    -- Each fluid's level as its row shows it, keyed by fluid type (the
+                    -- same numbers as the plan's FluidsToChange keys).
+                    local fluidLevel = {}
+                    for _, rn in ipairs({ "EngineFluid", "BrakeFluid", "CoolerFluid" }) do
+                        pcall(function()
+                            local row = dlg["CarPart_" .. rn]
+                            if not valid(row) then return end
+                            local ft = row.E_FluidType
+                            local txt = ""
+                            pcall(function() txt = row.Text_InstalledDuration:GetText():ToString() end)
+                            local num = tostring(txt):match("(%d+[%.,]?%d*)%s*%%")
+                            local pct = num and tonumber((num:gsub(",", "."))) or nil
+                            if type(ft) == "number" then fluidLevel[ft] = pct end
+                        end)
+                    end
+                    local fl = {}
+                    for k, v in pairs(fluidLevel) do fl[#fl + 1] = tostring(k) .. "=" .. tostring(v) end
+                    trail[#trail + 1] = "fluid levels " .. (#fl > 0 and table.concat(fl, " ") or "unread")
+                    local n, first = 0, nil
+                    for k, v in pairs(cond) do
+                        n = n + 1
+                        first = first or (k .. " installed=" .. tostring(v.installed) .. " text='" .. tostring(v.txt) .. "'")
+                    end
+                    trail[#trail + 1] = "rows " .. n .. (first and (" (" .. first .. ")") or "")
+                    picked = tbl("CarPartsForSwap_Storage")
+                    plan = { storage = picked, cond = cond, fluidLevel = fluidLevel, fluids = tbl("FluidsToChange"),
+                        fuses = worker_names("FusesToSwap_Keys", "FusesToSwap_Keys"), off = worker_names("CarPartsToDisassemble", "CarPartsToDisassemble"),
+                        offFuses = out_field("DisassembleFusses", table.unpack(outs)) == true, n = 0 }
+                    local counts = {}
+                    -- Replace All ticks every fluid even on a car with full fluids. With
+                    -- no part or fuse to change, a fluid at full is dropped, so a car
+                    -- with nothing to do skips the mechanic instead of having full
+                    -- fluids changed. With parts to change, the game's pick stands.
+                    if mode ~= "disassemble" and next(plan.storage) == nil and #plan.fuses == 0 then
+                        for k in pairs(plan.fluids) do
+                            local lv = plan.fluidLevel[k]
+                            if type(lv) == "number" and lv >= 99.5 then plan.fluids[k] = nil end
+                        end
+                    end
+                    for _, k in ipairs({ "storage", "fluids", "fuses", "off" }) do
+                        local c = 0
+                        for _ in pairs(plan[k]) do c = c + 1 end
+                        counts[#counts + 1] = k .. " " .. c
+                        plan.n = plan.n + c
+                    end
+                    if plan.offFuses then plan.n = plan.n + 1 end
+                    local keys = {}
+                    for k, v in pairs(plan.storage) do keys[#keys + 1] = tostring(k) .. ":" .. prop_type(v):gsub("^BP_Product_CarPart_", ""):gsub("_C$", "") end
+                    table.sort(keys)
+                    log("plan " .. car .. " slots: " .. table.concat(keys, " "))
+                    if #plan.fuses > 0 or #plan.off > 0 then
+                        log("plan " .. car .. " names: fuses " .. table.concat(plan.fuses, ",") .. " | off " .. table.concat(plan.off, ","))
+                    end
+                    trail[#trail + 1] = table.concat(counts, ", ") .. (plan.offFuses and ", fuses off" or "") .. (bad > 0 and (", " .. bad .. " unreadable keys") or "")
+                    -- Every storage pick must be a live part object, or the plan is refused.
+                    for slot, part in pairs(plan.storage) do
+                        if not valid(part) then
+                            trail[#trail + 1] = "slot " .. tostring(slot) .. " holds no part"
+                            plan = nil
+                            break
+                        end
+                    end
+                    if plan and bad > 0 then plan = nil end
+                end
+            end
+        else
+            trail[#trail + 1] = "no dialogue"
+        end
+        run("clear", function() worker:AutomationClearPartsToChange() end)
+        if valid(dlg) then run("close", function() worker:DestroyDialogue() end) end
+        log("plan " .. car .. " type " .. partType .. ": " .. table.concat(trail, " "))
+        if not plan then
+            -- The pick already took its parts out of storage; a refused plan
+            -- puts every one it can still name back, so none is lost.
+            local st, n, back = player_storage(), 0, 0
+            for _, it in pairs(picked or {}) do
+                if valid(it) then
+                    n = n + 1
+                    if st and store_item(st, it) then back = back + 1 end
+                end
+            end
+            if n > 0 then log("plan " .. car .. ": refused, " .. back .. " of " .. n .. " picked parts back to storage") end
+            return nil, "the mechanic's parts list couldn't be read"
+        end
+        return plan
+    end
+    -- Writes a plan's lists onto the car's stored task, and onto the robot's
+    -- own copy when it already has the car; each count is read back.
+    local function add_plan(car, plan)
+        local fields = task_fields()
+        local mw = fields and field_named(fields, "MechanicalWorkshop")
+        local ptc = mw and field_named(mw[3], "PartsToChange")
+        if not ptc then return false, "task struct not found" end
+        local names = {}
+        for _, f in ipairs({ { "storage", "CarPartsForSwap_Storage" }, { "fluids", "FluidsToChange" }, { "fuses", "FusesToSwap_Keys" },
+            { "off", "CarPartsToDisassemble" }, { "offFuses", "bDisassembleFusses" } }) do
+            local fd = field_named(ptc[3], f[2])
+            if fd then names[f[1]] = fd[1] end
+        end
+        local task, unread = stored_task(robot, car)
+        if unread or not task then return false, "car has no task to add parts to" end
+        local targets = { { "task", function() return task[mw[1]][ptc[1]] end } }
+        if current_car(robot) == car then
+            targets[#targets + 1] = { "robot copy", function() return robot.CurrentTaskOrder[mw[1]][ptc[1]] end }
+        end
+        local report = {}
+        for _, tg in ipairs(targets) do
+            local okP, parts = pcall(tg[2])
+            if not (okP and parts) then return false, tg[1] .. " parts lists unreadable" end
+            -- FluidsToChange maps a fluid kind (an enum number) to true; only those
+            -- plain values are written, anything else refuses the plan.
+            for k, v in pairs(plan.fluids) do
+                if type(k) ~= "number" or type(v) ~= "boolean" then
+                    return false, "fluid entry of an unexpected type (" .. type(k) .. "=" .. type(v) .. ")"
+                end
+            end
+            for kind, list in pairs({ storage = plan.storage, fluids = plan.fluids }) do
+                local okM, map = pcall(function() return parts[names[kind]] end)
+                if names[kind] and okM and map then
+                    local want = 0
+                    for k, v in pairs(list) do
+                        local key = (kind == "storage") and FName(tostring(k)) or k
+                        pcall(function() map:Add(key, v) end)
+                        want = want + 1
+                    end
+                    local n = 0
+                    pcall(function() map:ForEach(function() n = n + 1 end) end)
+                    report[#report + 1] = tg[1] .. " " .. kind .. " " .. n .. "/" .. want
+                    if n < want then
+                        log("parts " .. car .. ": " .. table.concat(report, ", "))
+                        return false, tg[1] .. " " .. kind .. " holds " .. n .. " of " .. want
+                    end
+                end
+            end
+            -- Name lists: written one entry at a time from index 1, in order and
+            -- with no gaps (the only safe way on this UE4SS build, as Reset does),
+            -- then read back by name.
+            for kind, list in pairs({ fuses = plan.fuses, off = plan.off }) do
+                if #list > 0 then
+                    local okA, arr = pcall(function() return parts[names[kind]] end)
+                    if not (names[kind] and okA and arr) then return false, tg[1] .. " " .. kind .. " list unreadable" end
+                    for i, nm in ipairs(list) do pcall(function() arr[i] = FName(nm) end) end
+                    local got = {}
+                    pcall(function() arr:ForEach(function(_, e)
+                        local okE, ev = pcall(function() return e:get() end)
+                        got[#got + 1] = text_of(okE and ev or e)
+                    end) end)
+                    local same = #got == #list
+                    for i = 1, #list do if got[i] ~= list[i] then same = false end end
+                    report[#report + 1] = tg[1] .. " " .. kind .. " " .. #got .. "/" .. #list
+                    if not same then
+                        log("parts " .. car .. ": " .. table.concat(report, ", "))
+                        return false, tg[1] .. " " .. kind .. " list not kept"
+                    end
+                end
+            end
+            if plan.offFuses and names.offFuses then
+                pcall(function() parts[names.offFuses] = true end)
+                local okR, v = pcall(function() return parts[names.offFuses] end)
+                report[#report + 1] = tg[1] .. " fuses off " .. tostring(okR and v)
+                if not (okR and v == true) then
+                    log("parts " .. car .. ": " .. table.concat(report, ", "))
+                    return false, tg[1] .. " fuse-removal flag not kept"
+                end
+            end
+        end
+        log("parts " .. car .. ": " .. table.concat(report, ", "))
+        return true
+    end
     -- The profile shown for a car is the one behind its current task, so it
     -- goes once the car has no task (a later task started in the game's own
     -- scanner mustn't show an old profile).
@@ -1009,8 +1321,18 @@ local function intake_tick()
         local cur = current_car(robot)
         if cur and cur ~= "" then hasTask[cur] = true end
         for id in pairs(hasTask) do salePending["@" .. id] = true end
+        -- A task that goes away counts as done only if the platform took the
+        -- car after the profile was applied. One gone before that was removed
+        -- by something else (the game's reset, another automation mod): the
+        -- profile drops, and no sale check starts for a car that wasn't worked.
+        if cur and applied[cur] then failures[cur .. "~carried"] = true end
         for id in pairs(applied) do
-            if not hasTask[id] then
+            if not hasTask[id] and not failures[id .. "~carried"] then
+                log("profile for " .. id .. " (" .. tostring(applied[id]) .. ") dropped: its task was removed before the platform took the car (the game's reset, or another automation mod)")
+                salePending["@" .. id] = nil
+                applied[id] = nil pruned = true
+            elseif not hasTask[id] then
+                failures[id .. "~carried"] = nil
                 log("profile for " .. id .. " (" .. tostring(applied[id]) .. ") dropped: no task in the map and not the robot's car")
                 -- The task is gone and the platform has let the car go: with Post
                 -- for Sale on, it should now be on its Front Parking spot. Only
@@ -1094,15 +1416,141 @@ local function intake_tick()
             and failures[c.id] and failures[c.id] >= MAX_TRIES and os.clock() - (failures[c.id .. "@"] or 0) >= 30
         if partsWait then failures[c.id] = MAX_TRIES - 1 end
         if profileName and not unread and not existing and (failures[c.id] or 0) < MAX_TRIES then
-            local isCustom = mech_on(profile_of(profileName)) and profile_of(profileName).mechanic.mode == "custom"
             local ok, why = true, nil
-            if isCustom then ok, why = add_custom_parts(c.id, profileName, true) end
-            if ok then ok, why = apply_profile(c.id, profileName) end
-            if ok and isCustom then
-                -- On failure add_custom_parts removes the task itself, so the
-                -- car waits without a task that would fit nothing.
-                ok, why = add_custom_parts(c.id, profileName)
-                if ok and why == "deferred" then failures[c.id .. "#parts"] = profileName end
+            local pp = profile_of(profileName)
+            local mode = mech_on(pp) and pp.mechanic.mode or nil
+            local plan, noMech = nil, false
+            -- The game's pick takes its parts out of storage at once (the
+            -- mechanic's AddCarPart does), and clearing the pick doesn't put them
+            -- back. So any picked part that doesn't end up on a task goes back to
+            -- storage here: a job that's refused, or a Custom pick of another tier.
+            local function give_back(parts, reason)
+                local st, n, back = player_storage(), 0, 0
+                for _, it in pairs(parts or {}) do
+                    if valid(it) then
+                        n = n + 1
+                        if st and store_item(st, it) then back = back + 1 end
+                    end
+                end
+                if n > 0 then log("intake " .. c.id .. ": " .. back .. " of " .. n .. " picked parts back to storage (" .. reason .. ")") end
+            end
+            if mode == "replace" or mode == "disassemble" then
+                -- Picked before the task is added, so a car with nothing to do
+                -- stays put instead of riding to the mechanic for nothing.
+                local okP, res, whyP = pcall(plan_parts, c.id, PART_TYPE[pp.mechanic.partType or "Stock"] or 1, mode)
+                if not okP then ok, why = false, "parts plan failed: " .. tostring(res)
+                elseif not res then ok, why = false, whyP
+                elseif res.n == 0 then
+                    -- Nothing for the mechanic: the car still gets the rest of its profile.
+                    noMech = true
+                    log("intake " .. c.id .. ": nothing for the mechanic (" .. mode .. "), so the task goes without the mechanic step")
+                else plan = res end
+            elseif mode == "custom" then
+                -- Custom is the game's own pick, one per part type the profile
+                -- uses: each slot takes the part the game picks for it in that
+                -- slot's type, so it fits the car. A slot the game doesn't pick
+                -- (it doesn't need replacing, or none of that type is in storage)
+                -- is left as it is. The fuses and fluids come from the first pick.
+                local tiers, order = {}, {}
+                for _, slot in ipairs(SLOT_NAMES) do
+                    local t = pp.mechanic.slots[slot] or "Stock"
+                    if not tiers[t] then tiers[t] = {} order[#order + 1] = t end
+                    tiers[t][slot] = true
+                end
+                plan = { storage = {}, fluids = {}, fuses = {}, off = {}, offFuses = false, n = 0 }
+                for i, t in ipairs(order) do
+                    local okP, res, whyP = pcall(plan_parts, c.id, PART_TYPE[t] or 1, "replace")
+                    if not (okP and res) then
+                        ok, why = false, "parts plan failed (" .. t .. "): " .. tostring(okP and whyP or res)
+                        break
+                    end
+                    local spare = {}
+                    for k, it in pairs(res.storage) do
+                        local fuseKey = tonumber(k) ~= nil
+                        if tiers[t][k] or (fuseKey and i == 1) then plan.storage[k] = it else spare[#spare + 1] = it end
+                    end
+                    if i == 1 then plan.fluids, plan.fuses, plan.cond = res.fluids, res.fuses, res.cond end
+                    give_back(spare, t .. " parts not used by this profile")
+                end
+                if ok then
+                    -- All or nothing: every worn or missing part the profile covers
+                    -- must have its pick, or the car gets no task (a part-done car
+                    -- mustn't go on to sale). A part's condition is read the way the
+                    -- game's dialogue reads it.
+                    local info = info_by_id(c.id)
+                    local short, unreadSlots, worn = {}, {}, 0
+                    for _, slot in ipairs(SLOT_NAMES) do
+                        local o1, o2 = {}, {}
+                        local okD = info and pcall(function() info:GetPartDurability(FName(slot), o1, o2) end)
+                        -- Out-parameters come back as handles into the call; each is
+                        -- resolved with get() before it's read, or the read fails.
+                        local function got(v)
+                            local okG, g = pcall(function() return v:get() end)
+                            return okG and g or v
+                        end
+                        local isValid = got(out_field("IsValid", o1, o2))
+                        local st = got(out_field("PartState", o1, o2))
+                        local inst, d = nil, nil
+                        pcall(function() inst = got(st.Installed) end)
+                        pcall(function() d = got(st.Durability) end)
+                        if slot == SLOT_NAMES[1] then
+                            log("intake " .. c.id .. ": condition read " .. slot .. " ok=" .. tostring(okD) .. " valid=" .. tostring(isValid)
+                                .. " state=" .. type(st) .. " installed=" .. tostring(inst) .. " durability=" .. tostring(d))
+                        end
+                        -- The direct read failing, the dialogue row's reading stands in.
+                        if not okD or type(d) ~= "number" then
+                            local cr = plan.cond and plan.cond[slot]
+                            if cr and type(cr.d) == "number" then
+                                okD, isValid, inst, d = true, true, cr.installed, cr.d
+                            elseif cr and cr.installed == false then
+                                okD, isValid, inst, d = true, true, false, 0
+                            end
+                        end
+                        if not okD or (isValid == true and type(d) ~= "number") then
+                            unreadSlots[#unreadSlots + 1] = slot
+                        else
+                            local full = type(d) == "number" and ((d >= 0.995 and d <= 1.005) or d >= 99.5)
+                            if isValid ~= true or inst == false or not full then
+                                worn = worn + 1
+                                if not plan.storage[slot] then
+                                    short[#short + 1] = slot .. " (" .. tostring(slot_class(slot, pp.mechanic.slots[slot] or "Stock")) .. ")"
+                                end
+                            end
+                        end
+                    end
+                    if #unreadSlots > 0 then
+                        ok, why = false, "part condition unreadable: " .. table.concat(unreadSlots, ", ")
+                    elseif #short > 0 then
+                        ok, why = false, "missing in storage: " .. table.concat(short, ", ")
+                    end
+                    if not ok then
+                        give_back(plan.storage, "not every worn part has its replacement")
+                        plan = nil
+                    else
+                        for _ in pairs(plan.storage) do plan.n = plan.n + 1 end
+                        for _ in pairs(plan.fluids) do plan.n = plan.n + 1 end
+                        log("intake " .. c.id .. ": custom, " .. worn .. " worn or missing, all picked")
+                        if plan.n == 0 then
+                            noMech, plan = true, nil
+                            log("intake " .. c.id .. ": nothing for the mechanic (custom), so the task goes without the mechanic step")
+                        end
+                    end
+                else
+                    give_back(plan.storage, "plan failed")
+                end
+            end
+            if ok then
+                ok, why = apply_profile(c.id, profileName, { noMech = noMech })
+                if not ok and plan then give_back(plan.storage, "task not added") end
+            end
+            if ok and plan then
+                ok, why = add_plan(c.id, plan)
+                -- A job without its parts would be closed with no work, so it
+                -- comes off, and its parts go back.
+                if not ok then
+                    pcall(function() robot["Remove Automation Task"](robot, c.id, false) end)
+                    give_back(plan.storage, "parts not kept on the task")
+                end
             end
             log("intake " .. c.id .. " profile " .. profileName .. ": " .. (ok and (why == "deferred" and "applied, parts deferred" or (why and ("applied, " .. why) or "applied")) or ("not applied, " .. tostring(why))))
             if ok then
@@ -2416,7 +2864,19 @@ local NOT_ON_DISK = "Done, but the mod folder can't be written, so this lasts on
 -- the log (and so into the bug report).
 local function player_reason(why)
     why = tostring(why or "")
-    if why:find("robot manager not found") or why:find("task struct not found") then
+    -- Mechanic-plan reasons first: two of them contain "unreadable"/"couldn't be read"
+    -- and would otherwise get the platform-list text below.
+    if why:find("no mechanic hired") then
+        return "There's no mechanic at the Mechanical Workshop, so the car got no task. Hire one, or give the car a profile with the Mechanical Workshop off, then click Try Again."
+    elseif why:find("^the mechanic's parts list couldn't be read") or why:find("^parts plan failed") then
+        return "Couldn't read the mechanic's parts list, so the car got no task. Click Try Again."
+    elseif why:find("^part condition unreadable") then
+        return "Couldn't read the condition of this car's parts, so the car got no task. Click Try Again."
+    elseif why:find("holds %d+ of %d+") or why:find("list not kept") or why:find("flag not kept")
+        or why:find("parts lists unreadable") or why:find(" list unreadable")
+        or why:find("^fluid entry of an unexpected type") or why:find("^car has no task to add parts to") then
+        return "Couldn't add the parts to the car's task, so the task was taken off again and its parts put back in storage. Click Try Again."
+    elseif why:find("robot manager not found") or why:find("task struct not found") then
         return "Automation isn't ready yet. Try again in a moment."
     elseif why:find("storage unreadable") or why:find("storage stacks unreadable") then
         return "Couldn't read your storage, so nothing was changed."
@@ -4206,7 +4666,7 @@ local HELP = {
     { "Post for Sale",
       "Only for profiles that finish at Front Parking. Turn it on and set Competitiveness: the same bar as Competitiveness of the offer on the game's ad screen. For each car the mod picks the highest price that keeps the bar at that level, counting its photos, wash and other bonuses the way the game does. A fuller bar sells sooner but means a lower price, and a full bar can mean well under the market value. With Non-negotiable on, the game's bar only compares the price with the market value, and so does the mod. Non-negotiable, Available for installments, Available for online sale and Offer Warranty are the same choices as on the game's ad screen; one the game hasn't unlocked yet, or doesn't offer for that car, is left off. The game needs a photo to post a car, so the Photo Studio stays on while this is on. When the platform leaves a car with this profile at Front Parking, the car is posted once, if the game's ad screen would accept it (for example, it has a photo and is parked properly on the spot); from then on it's the game's ad like any other. The mod never takes an ad down. A car you park there yourself is yours to price." },
     { "Mechanic",
-      "Only when the Mechanical Workshop is on; otherwise these buttons are dark and do nothing. Replace Damaged swaps damaged parts for the part type you pick under Parts (Default, Stock, Sport or Race). Custom lets you pick Stock, Sport or Race for every part; every slot has to be set before the profile saves, so the car comes out complete. Its parts are taken from your storage when the car gets its task, and the task isn't added unless every part is there. Disassemble strips the car for parts." },
+      "Only when the Mechanical Workshop is on; otherwise these buttons are dark and do nothing. Replace Damaged has the mechanic replace each worn part, and the fuses and fluids, with the part type you pick under Parts (Default, Stock, Sport or Race), taken from your storage the way the game's own Automation tab picks them. A part with no replacement of that type in storage is left as it is. Custom lets you pick Stock, Sport or Race for every part, and every part has to be set before the profile saves. It replaces every worn or missing part, plus the fuses and fluids, and the car gets its task only once every part it needs is in storage, so it comes out complete. Disassemble takes every part and fuse off the car and drains its fluids. If there's nothing for the mechanic to do, the car skips the mechanic and gets the rest of its profile." },
     { "Sport and Race Parts",
       "These need the Up 2 You DLC. Without it, Replace Damaged offers Default and Stock, and Custom offers Stock." },
     { "Car Pickup",

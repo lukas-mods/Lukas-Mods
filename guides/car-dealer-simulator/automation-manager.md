@@ -1,6 +1,6 @@
 # Automation Manager — Guide
 
-**Car Dealer Simulator · v1.0 · by Luka's Mods**
+**Car Dealer Simulator · v1.0.1 · by Luka's Mods**
 
 Profiles for the automation platform. Automation Manager adds an app to the tablet and the office computer that sets up your cars' automation tasks and shows the whole shop at a glance. This page is the full reference. The short version is on [the mod's Nexus page](https://www.nexusmods.com/cardealersimulator/mods/60).
 
@@ -14,11 +14,11 @@ Profiles for the automation platform. Automation Manager adds an app to the tabl
 
 ## Requirements
 
-- Car Dealer Simulator on PC. Tested on the Steam version, game build 26565045. The Microsoft Store / Xbox PC version is untested, and UE4SS installs differently there.
+- Car Dealer Simulator on PC. Tested on the Steam version, game build 26731899. The Microsoft Store / Xbox PC version is untested, and UE4SS installs differently there.
 - UE4SS (the mod loader), an **EXPERIMENTAL** build: the game runs on Unreal Engine 5.4, which the stable UE4SS release doesn't support. Tested with the build whose log says `UE4SS - v3.0.1 Beta #0 - Git SHA #44afb36d`: [the one on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/53), the same build Parts Manager uses. With Vortex, it's installed for you (see [Install](#install)).
 - Optional: the "Up 2 You" DLC, for Sport and Race parts. Without it only Default and Stock are offered.
 
-> ⚠️ **Use at Your Own Risk.** Any mod can crash a game or damage a save. Back up your saves before you install it, and now and then while you play: copy `%LOCALAPPDATA%\CarDealerSimulator\Saved\` somewhere safe. Automation Manager starts real tasks on your cars, takes parts from your storage for Custom profiles, and posts real ads at the price it works out. Check a profile before you give it to a car.
+> ⚠️ **Use at Your Own Risk.** Any mod can crash a game or damage a save. Back up your saves before you install it, and now and then while you play: copy `%LOCALAPPDATA%\CarDealerSimulator\Saved\` somewhere safe. Automation Manager starts real tasks on your cars, takes parts from your storage for the mechanic, and posts real ads at the price it works out. Check a profile before you give it to a car.
 
 ## Install
 
@@ -49,7 +49,7 @@ The game starting proves nothing. Open `<game folder>\CarDealerSimulator\Binarie
 
 ```
 Mod 'AutomationManager' has enabled.txt, starting mod.
-[AutomationManager] v1.0 (... B, sum ...) loaded (running)
+[AutomationManager] v1.0.1 (... B, sum ...) loaded (running)
 ```
 
 In the game, the Automation Manager app appears on the tablet and on the office computer once a save has loaded, not on the main menu.
@@ -62,9 +62,9 @@ The app has five tabs: Board, Cars, Car Pickup, Front Parking and Profiles. It o
 
 A profile picks which stations a car visits (Photo Studio, Paint Booth, Car Wash, Body Workshop, Mechanical Workshop, Air Compressor, Fuel Dispenser) and where it finishes (Front Parking, Side Parking, Underground Garage or Tuning Garage).
 
-- **The mechanic step** can Replace Damaged parts with one part type, use Custom (a part type for every slot, all of them set; the parts are taken from your storage when the task is added, all or nothing), or Disassemble the car. Sport and Race parts need the Up 2 You DLC.
+- **The mechanic step** can Replace Damaged parts with one part type, use Custom (a part type for every slot, all of them set; the car gets its task only once every part it needs is in storage, so it comes out complete), or Disassemble the car. The parts, fuses and fluids come from your storage, picked the way the game's own Automation tab picks them. Sport and Race parts need the Up 2 You DLC.
 - **The Paint Booth step** paints the car a colour the profile picks.
-- **Stations a car doesn't need are skipped**, by the game's own tests: fuel near full, tyres at pressure, body and looks already good, and a tuned car skips body, wash and paint.
+- **Stations a car doesn't need are skipped**, by the game's own tests: fuel near full, tyres at pressure, body and looks already good, and a tuned car skips body, wash and paint. The mechanic is skipped too when there's nothing for it to do.
 - Profiles can be renamed, and are saved in `profiles.lua` in the mod's folder.
 
 ### Giving Cars Their Tasks
@@ -118,7 +118,7 @@ A profile that finishes at Front Parking can Post for Sale. When the platform le
 
 ## What It Changes
 
-- **Real Tasks, Parts and Ads:** it starts real tasks on your cars, takes parts from your storage for Custom profiles, and posts real ads.
+- **Real Tasks, Parts and Ads:** it starts real tasks on your cars, takes parts from your storage for the mechanic, and posts real ads.
 - **Its Own Files Only:** `profiles.lua` (your profiles), `delivery.lua` (the Car Pickup settings) and `AutomationManager-bug-*.txt` (bug reports), all in its own folder. It changes no game files; it works through the game's own functions while the game runs.
 
 ## Uninstall
