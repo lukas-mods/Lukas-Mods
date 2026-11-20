@@ -10,7 +10,7 @@
 -- New file-level state goes into an existing table, not a new local, and
 -- every change is checked with luac -p before it ships.
 local MOD = "AutomationManager"
-local VERSION = "1.0.1"
+local VERSION = "1.0.2"
 local function log(msg) print("[" .. MOD .. "] " .. tostring(msg) .. "\n") end
 
 ---------------------------------------------------------------------------
@@ -4118,7 +4118,7 @@ end
 -- the manager's own AddVehicleToTransport; Send Now lowers the minimum to
 -- the list's length and puts it back once the transporter has left.
 ---------------------------------------------------------------------------
-ui.deliv = { auto = false, tried = {} }
+ui.deliv = { auto = false, tried = {}, drivenSeen = {} }
 ui.load_delivery = function()
     local f = io.open(mod_dir() .. "/delivery.lua", "r")
     if not f then return end
@@ -4307,6 +4307,17 @@ ui.pickup_cars = function()
         end
         if n == 0 then return nil, "no parking spots found" end
     end
+    -- A car within 30 m of the player is left for now: one they've just got
+    -- into without starting it isn't marked as driven yet. It's offered
+    -- again once they walk away; a missed offer, never a wrong one.
+    local me = nil
+    pcall(function()
+        local pawn = FindFirstOf("PlayerController").Pawn
+        if valid(pawn) then
+            local l = pawn:K2_GetActorLocation()
+            me = { X = l.X, Y = l.Y, Z = l.Z }
+        end
+    end)
     local out, all = {}, find_all("BP_VehicleBase_C")
     -- The count of cars found by their base class goes in the log when it
     -- changes, so an empty page can be told from a lookup that finds nothing.
@@ -4321,6 +4332,22 @@ ui.pickup_cars = function()
                 local info = v.VehicleInfoObject
                 if not valid(info) then return false end
                 if info.PlayerOwned ~= true then return false end
+                -- Only cars the player has never driven: the game marks a car
+                -- (WasDrivenByPlayer, saved with the game) the first time the
+                -- player starts it, and never clears the mark. A bought car
+                -- that's waiting to be collected hasn't been driven; a car
+                -- the player uses, or has used, has. A mark that doesn't read
+                -- keeps the car off: a missed offer, never a wrong one.
+                if info.WasDrivenByPlayer ~= false then
+                    -- A car whose id doesn't read is keyed by its object path, so a
+                    -- build that breaks the id read logs every car, not one.
+                    local id, mark = car_id_of(v) or ("no id, " .. path_of(v)), info.WasDrivenByPlayer
+                    if not ui.deliv.drivenSeen[id] then
+                        ui.deliv.drivenSeen[id] = true
+                        log("delivery: " .. id .. " left off, " .. (mark == true and "the player has driven it" or ("its driven mark reads " .. tostring(mark))))
+                    end
+                    return false
+                end
                 if info.CarPickLock or info.IsWreckForSell or info.IsAbandonedWreck then return false end
                 if valid(info.VehicleOffer) then return false end
                 if info.ModelPresetInfo[storable] ~= true then return false end
@@ -4328,6 +4355,7 @@ ui.pickup_cars = function()
                 local p = { X = l.X, Y = l.Y, Z = l.Z }
                 local d = math.sqrt((p.X - gl.X) ^ 2 + (p.Y - gl.Y) ^ 2 + (p.Z - gl.Z) ^ 2) / 100
                 if math.floor(d + 0.5) <= 70 then return false end
+                if me and math.sqrt((p.X - me.X) ^ 2 + (p.Y - me.Y) ^ 2 + (p.Z - me.Z) ^ 2) / 100 <= 30 then return false end
                 return ui.in_box(box, p) == false
             end)
             local id = ok and keep and car_id_of(v)
@@ -4634,7 +4662,7 @@ local HINTS = {
     cars = "Cars in the parking near the warehouse. Give one a profile and it gets its task by itself.",
     profiles = "A profile is a plan for a car: which stations, which parts, where it ends up. Set it up once, use it on any car.",
     front = "Your Front Parking spots. Click a car for its details; the mod only acts on cars it brought here.",
-    delivery = "Your transporter's Car Pickup list. The employee with the pickup task starts the trip once the list has as many cars as Pick up when is set to. Add Bought Cars fills the list for you.",
+    delivery = "Your transporter's Car Pickup list. The employee with the pickup task starts the trip once the list has as many cars as Pick up when is set to. Add Bought Cars adds cars you own that are away from your shop and that the game hasn't marked as driven by you.",
 }
 local HELP = {
     { "What This App Does",
@@ -4670,7 +4698,7 @@ local HELP = {
     { "Sport and Race Parts",
       "These need the Up 2 You DLC. Without it, Replace Damaged offers Default and Stock, and Custom offers Stock." },
     { "Car Pickup",
-      "The transporter is the game's Car Pickup: an employee you've given the pickup task at reception drives it to collect cars you own that are away from your shop. The trip starts once its list has as many cars as Pick up when is set to (1 to 7, the same setting as on the Car Pickup screen), which - and + change here. Add Bought Cars (off until you turn it on) picks cars by the Car Pickup screen's rules, as the mod reads them, and puts them on that list, up to 7, the same way Add to list does. That's any car you own that's away from your shop, not only ones you just bought. Cars on your shop's parking spots, and cars the platform or the mod is working on, stay off it. Send Now sets Pick up when to the number of cars already on the list, so the trip starts with those, then sets it back to your number once the transporter has left (or when you next load, if you quit first). The trip, the driver and the time it takes are the game's own; the mod only adds cars to the list and changes Pick up when." },
+      "The transporter is the game's Car Pickup: an employee you've given the pickup task at reception drives it to collect cars you own that are away from your shop. The trip starts once its list has as many cars as Pick up when is set to (1 to 7, the same setting as on the Car Pickup screen), which - and + change here. Add Bought Cars (off until you turn it on) puts cars on that list for you, up to 7, the same way Add to list does. It takes only cars you own that are away from your shop and that you've never driven, and leaves out any the platform or the mod is working on. To bring back a car you've driven, add it on the game's Car Pickup screen. Send Now sets Pick up when to the number of cars already on the list, so the trip starts with those, then sets it back to your number once the transporter has left (or when you next load, if you quit first). The trip, the driver and the time it takes are the game's own; the mod only adds cars to the list and changes Pick up when." },
     { "Problems",
       "Report a Bug saves a report file in the mod's folder and opens GitHub; drag the file into the issue and click Submit new issue. Request a Feature opens the feature form. Your profiles are saved in profiles.lua in the mod's folder." },
 }

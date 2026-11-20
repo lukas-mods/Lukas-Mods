@@ -1,4 +1,4 @@
-Automation Manager v1.0.1 -- by Luka's Mods
+Automation Manager v1.0.2 -- by Luka's Mods
 Car Dealer Simulator UE4SS mod
 
 WHAT IT DOES
@@ -44,11 +44,12 @@ shop at a glance:
     because the game has no photo for it.
   * Car Pickup: the transporter's list and its Pick up when setting, with
     - and + (the same setting as the game's Car Pickup screen). Add Bought
-    Cars puts every car the Car Pickup screen would offer on the list, up
-    to 7; cars on your shop's own parking spots, and cars the platform or
-    the mod is working on, stay off it. Send Now sends the transporter
-    with the cars already on its list. While it's out, the page shows when
-    it's back.
+    Cars puts cars you own that are away from your shop on the list, up
+    to 7. It leaves off any car the game has marked as driven by you, and
+    any the platform or the mod is working on. To bring back a car you've
+    driven, add it on the game's Car Pickup screen. Send Now sends the
+    transporter with the cars already on its list. While it's out, the
+    page shows when it's back.
   * Front Parking: your Front Parking spots in one row (14 on a full lot),
     each with its car and whether it's listed. Click a car for its details.
   * Post for Sale: a profile that finishes at Front Parking can price the
@@ -126,7 +127,7 @@ CHECK THAT IT LOADED
       ...\Binaries\Win64\ue4ss\UE4SS.log
   It should contain:
       Mod 'AutomationManager' has enabled.txt, starting mod.
-      [AutomationManager] v1.0.1 (... B, sum ...) loaded (running)
+      [AutomationManager] v1.0.2 (... B, sum ...) loaded (running)
   In the game, the Automation Manager app appears on the tablet and on the
   office computer once a save has loaded -- not on the main menu.
 

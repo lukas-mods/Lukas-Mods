@@ -2,6 +2,12 @@
 
 Released versions only.
 
+## 1.0.2 - Car Pickup Fix
+
+A bug fix from a player report. No new features.
+
+- Add Bought Cars now leaves off any car the game has marked as driven by you. Bought cars you haven't driven yet are still added. Before, it could put a car you'd been driving on the transporter's list, and the game then reserved it for the transporter's driver, so you couldn't use it.
+
 ## 1.0.1 - Mechanic Fixes
 
 Bug fixes from player reports. No new features.

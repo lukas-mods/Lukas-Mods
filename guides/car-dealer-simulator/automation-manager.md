@@ -1,6 +1,6 @@
 # Automation Manager — Guide
 
-**Car Dealer Simulator · v1.0.1 · by Luka's Mods**
+**Car Dealer Simulator · v1.0.2 · by Luka's Mods**
 
 Profiles for the automation platform. Automation Manager adds an app to the tablet and the office computer that sets up your cars' automation tasks and shows the whole shop at a glance. This page is the full reference. The short version is on [the mod's Nexus page](https://www.nexusmods.com/cardealersimulator/mods/60).
 
@@ -49,7 +49,7 @@ The game starting proves nothing. Open `<game folder>\CarDealerSimulator\Binarie
 
 ```
 Mod 'AutomationManager' has enabled.txt, starting mod.
-[AutomationManager] v1.0.1 (... B, sum ...) loaded (running)
+[AutomationManager] v1.0.2 (... B, sum ...) loaded (running)
 ```
 
 In the game, the Automation Manager app appears on the tablet and on the office computer once a save has loaded, not on the main menu.
@@ -87,7 +87,7 @@ Your shop from above: every station with Working, Idle or Reserved, each car whe
 
 The transporter's list and its Pick up when setting, with - and + to change it. It's the same setting as the game's Car Pickup screen.
 
-- **Add Bought Cars** puts every car the Car Pickup screen would offer on the transporter's list, up to 7. Cars on your shop's own parking spots, and cars the platform or the mod is working on, stay off it.
+- **Add Bought Cars** puts cars you own that are away from your shop on the transporter's list, up to 7. It leaves off any car the game has marked as driven by you, and any the platform or the mod is working on. To bring back a car you've driven, add it on the game's Car Pickup screen.
 - **Send Now** sends the transporter with the cars already on its list, then puts Pick up when back.
 - While the transporter is out, the page shows when it's back, for example "back in 3m45s", from the game's own trip timer.
 
