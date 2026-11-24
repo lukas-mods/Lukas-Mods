@@ -1,6 +1,6 @@
 # Automation Manager — Guide
 
-**Car Dealer Simulator · v1.0.2 · by Luka's Mods**
+**Car Dealer Simulator · v1.0.3 · by Luka's Mods**
 
 Profiles for the automation platform. Automation Manager adds an app to the tablet and the office computer that sets up your cars' automation tasks and shows the whole shop at a glance. This page is the full reference. The short version is on [the mod's Nexus page](https://www.nexusmods.com/cardealersimulator/mods/60).
 
@@ -14,8 +14,9 @@ Profiles for the automation platform. Automation Manager adds an app to the tabl
 
 ## Requirements
 
-- Car Dealer Simulator on PC. Tested on the Steam version, game build 26731899. The Microsoft Store / Xbox PC version is untested, and UE4SS installs differently there.
+- Car Dealer Simulator on PC. Tested on the Steam version, game build 26731899. This version's fixes were tested on 26891169. The Microsoft Store / Xbox PC version is untested, and UE4SS installs differently there.
 - UE4SS (the mod loader), an **EXPERIMENTAL** build: the game runs on Unreal Engine 5.4, which the stable UE4SS release doesn't support. Tested with the build whose log says `UE4SS - v3.0.1 Beta #0 - Git SHA #44afb36d`: [the one on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/53), the same build Parts Manager uses. With Vortex, it's installed for you (see [Install](#install)).
+- The game's Vehicle Platform, which you buy in the game's Store. Automation needs it.
 - Optional: the "Up 2 You" DLC, for Sport and Race parts. Without it only Default and Stock are offered.
 
 > ⚠️ **Use at Your Own Risk.** Any mod can crash a game or damage a save. Back up your saves before you install it, and now and then while you play: copy `%LOCALAPPDATA%\CarDealerSimulator\Saved\` somewhere safe. Automation Manager starts real tasks on your cars, takes parts from your storage for the mechanic, and posts real ads at the price it works out. Check a profile before you give it to a car.
@@ -49,7 +50,7 @@ The game starting proves nothing. Open `<game folder>\CarDealerSimulator\Binarie
 
 ```
 Mod 'AutomationManager' has enabled.txt, starting mod.
-[AutomationManager] v1.0.2 (... B, sum ...) loaded (running)
+[AutomationManager] v1.0.3 (... B, sum ...) loaded (running)
 ```
 
 In the game, the Automation Manager app appears on the tablet and on the office computer once a save has loaded, not on the main menu.
@@ -113,7 +114,7 @@ A profile that finishes at Front Parking can Post for Sale. When the platform le
 - **The Ad's Options:** Non-negotiable, Available for installments, Available for online sale and Offer Warranty are the same choices as the game's ad screen. One the game hasn't unlocked yet is left off: installments from reputation 12, online sale from 10, the warranty at its level, and never on a special car.
 - **Photo and Parking:** the game needs a photo to post a car, so Post for Sale keeps the Photo Studio on. A car not parked inside its spot's lines isn't posted.
 - **Check the Ad:** if the mod can't confirm a car's ad, the car shows Check the Ad. Look for it in Your Ads. Try Again only looks again and never posts twice; Dismiss makes the car yours.
-- **Send Back for Photos:** if a car is ever refused for having no photo, its panel offers Send Back for Photos: the car goes to a free spot near the warehouse, through the Photo Studio and back, and the mod tries again. This hasn't been seen in play: Post for Sale keeps the Photo Studio on, so the refusal shouldn't normally happen.
+- **Send Back for Photos:** if a car is ever refused for having no photo, its panel offers Send Back for Photos: the car goes to a free spot near the warehouse, through the Photo Studio and back, and the mod tries again. We haven't tested Send Back for Photos in play.
 - **It never takes an ad down.** A car whose ad you take down becomes yours, and the mod doesn't post it again. A posted ad keeps its photos after you save and load.
 
 ## What It Changes
@@ -127,4 +128,4 @@ Delete `<game folder>\CarDealerSimulator\Binaries\Win64\ue4ss\Mods\AutomationMan
 
 ## Report a Bug / Request a Feature
 
-Use the buttons in the app's header. **Report a Bug** saves a report file in the mod's folder (your profiles, the Board's cars and their stations, and the mod's recent log lines; your Windows user name and profile folders are replaced) and opens the GitHub issue form. Drag the file in and press Submit. **Request a Feature** opens the GitHub feature form. GitHub needs a free account. No account? Post on [the mod's Nexus page](https://www.nexusmods.com/cardealersimulator/mods/60) instead.
+Use the buttons in the app's header. **Report a Bug** saves a report file in the mod's folder (your profiles, the Board's cars and their stations, and the mod's recent log lines; your Windows user name and profile folders are replaced where the mod can read them, so check the file before you send it) and opens the GitHub issue form. Drag the file in and press Submit. **Request a Feature** opens the GitHub feature form. GitHub needs a free account. No account? Post on [the mod's Nexus page](https://www.nexusmods.com/cardealersimulator/mods/60) instead.

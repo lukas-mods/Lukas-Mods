@@ -1,4 +1,4 @@
-Automation Manager v1.0.2 -- by Luka's Mods
+Automation Manager v1.0.3 -- by Luka's Mods
 Car Dealer Simulator UE4SS mod
 
 WHAT IT DOES
@@ -70,8 +70,9 @@ Each page has a one-line hint, and Help in the app explains every part.
 
 REQUIREMENTS
   * Car Dealer Simulator on PC. Tested on the Steam version, game build
-    26731899. The Microsoft Store / Xbox PC version is untested, and UE4SS
-    installs differently there.
+    26731899. This version's fixes were tested on 26891169. The Microsoft
+    Store / Xbox PC version is untested, and UE4SS installs differently
+    there.
   * UE4SS (the mod loader), an EXPERIMENTAL build: the game runs on Unreal
     Engine 5.4, which the stable UE4SS release doesn't support. Tested with
     the build whose log says "UE4SS - v3.0.1 Beta #0 - Git SHA #44afb36d".
@@ -80,6 +81,8 @@ REQUIREMENTS
     so that dwmapi.dll and the ue4ss\ folder sit next to
     CarDealerSimulator-Win64-Shipping.exe.
     With Vortex, it's installed for you (see INSTALL -- VORTEX).
+  * The game's Vehicle Platform, which you buy in the game's Store.
+    Automation needs it.
   * Optional: the "Up 2 You" DLC, for Sport and Race parts. Without it only
     Default and Stock are offered.
 
@@ -127,7 +130,7 @@ CHECK THAT IT LOADED
       ...\Binaries\Win64\ue4ss\UE4SS.log
   It should contain:
       Mod 'AutomationManager' has enabled.txt, starting mod.
-      [AutomationManager] v1.0.2 (... B, sum ...) loaded (running)
+      [AutomationManager] v1.0.3 (... B, sum ...) loaded (running)
   In the game, the Automation Manager app appears on the tablet and on the
   office computer once a save has loaded -- not on the main menu.
 
@@ -149,9 +152,22 @@ REPORT A BUG / REQUEST A FEATURE
   Use the buttons in the app's header. "Report a Bug" saves a report file
   in the mod folder (your profiles, the Board's cars and their stations,
   and the mod's recent log lines; your Windows user name and profile
-  folders are replaced) and opens the GitHub issue form. Drag the file in
+  folders are replaced where the mod can read them, so check the file
+  before you send it) and opens the GitHub issue form. Drag the file in
   and press Submit. GitHub needs a free account. No account? Post on the
   mod's Nexus page instead.
+
+THANKS
+  Thank you to everyone who has reported bugs, commented on and endorsed
+  Automation Manager.
+
+MY OTHER MODS
+  Parts Manager: buy a whole car's worth of parts in one click.
+  https://www.nexusmods.com/cardealersimulator/mods/54
+  Steam Achievements: track your achievements as you play.
+  https://www.nexusmods.com/cardealersimulator/mods/56
+  Installed Mods: switch mods from the title menu.
+  https://www.nexusmods.com/cardealersimulator/mods/59
 
 LOGO
   The logo (Assets\logo.png) is part of the Luka's Mods branding.

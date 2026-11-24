@@ -10,7 +10,7 @@
 -- New file-level state goes into an existing table, not a new local, and
 -- every change is checked with luac -p before it ships.
 local MOD = "AutomationManager"
-local VERSION = "1.0.2"
+local VERSION = "1.0.3"
 local function log(msg) print("[" .. MOD .. "] " .. tostring(msg) .. "\n") end
 
 ---------------------------------------------------------------------------
@@ -2860,6 +2860,23 @@ local STEP_LABELS = { PhotoStudio = "Photo Studio", PaintBooth = "Paint Booth", 
 local function set_status(msg, good) ui.status, ui.statusGood = msg, good ~= false end
 local NOT_ON_DISK = "Done, but the mod folder can't be written, so this lasts only until you quit the game."
 
+-- Whether the player has bought the Vehicle Platform: true, false, or nil when
+-- it can't be read. The game loads its automation area, platform included,
+-- only once it's bought. "Robtics" is the game's own spelling.
+ui.platform_owned = function()
+    local owned = nil
+    for _, econ in ipairs(find_all("BP_EconomySystem_C")) do
+        if live(econ) then
+            local ok, v = pcall(function() return econ.HasAutomationRobtics end)
+            if not ok or type(v) ~= "boolean" then return nil end
+            -- Two that disagree (one left from another save) tell nothing.
+            if owned ~= nil and owned ~= v then return nil end
+            owned = v
+        end
+    end
+    return owned
+end
+
 -- What the player sees for an engine reason. The raw reason always goes to
 -- the log (and so into the bug report).
 local function player_reason(why)
@@ -2877,6 +2894,13 @@ local function player_reason(why)
         or why:find("^fluid entry of an unexpected type") or why:find("^car has no task to add parts to") then
         return "Couldn't add the parts to the car's task, so the task was taken off again and its parts put back in storage. Click Try Again."
     elseif why:find("robot manager not found") or why:find("task struct not found") then
+        local owned = ui.platform_owned()
+        local seen = why .. ", Vehicle Platform owned=" .. tostring(owned)
+        if mapOnce.noPlatform ~= seen then
+            mapOnce.noPlatform = seen
+            log("automation not ready: " .. seen)
+        end
+        if owned == false then return "Automation needs the Vehicle Platform, which you don't own yet. It's available in the game's Store." end
         return "Automation isn't ready yet. Try again in a moment."
     elseif why:find("storage unreadable") or why:find("storage stacks unreadable") then
         return "Couldn't read your storage, so nothing was changed."
@@ -3022,6 +3046,39 @@ ui.photo_paths = function()
     for _, row in pairs(ui.photoTable or {}) do for _ in pairs(row) do n = n + 1 end end
     log("photos.lua read: " .. n .. " photos")
     return ui.photoTable or nil
+end
+
+-- A photo's path under the saved-files folder, moved to the current save, and
+-- how it was found; nil and the reason when there isn't one. The game's call
+-- splits the whole path on "_" and keeps two pieces, so a "_" in a folder above
+-- the photos loses the saved folder or the file's own end. Then the call gets
+-- only Photos/<file>, and if that fails too the photo keeps the file name it
+-- has. The reason says whether a folder has a "_" or a non-English letter,
+-- never the folder itself.
+ui.photo_rel = function(gm, fp)
+    if not fp or fp == "" then return nil, "no file path" end
+    local function moved(p)
+        local o = {}
+        local okN = gm and pcall(function() gm:ChangePhotoPathToCurrentSaveFile(p, o) end)
+        local np = okN and out_field("NewPath", o) or nil
+        np = np and text_of(np)
+        return np ~= "" and np or nil, okN and "call ran" or "call failed"
+    end
+    local np, ran = moved(fp)
+    local _, cut = (np or ""):lower():find("saved", 1, true)
+    -- The same file type at the end, or the call lost part of the path.
+    local ext = fp:match("%.%w+$") or ""
+    local function whole(p) return p:sub(-#ext) == ext or ext == "" end
+    if cut and whole(np:sub(cut + 1)) then return np:sub(cut + 1), "by the game's call" end
+    local folder, tail = fp:match("^(.*[/\\])([Pp]hotos[/\\][^/\\]+)$")
+    local why = string.format("%s, %s, folder has _=%s, folder plain=%s", ran, not np and "no result" or cut and "the file's end lost" or "no saved folder in the result",
+        tostring((folder or fp):find("_", 1, true) ~= nil), tostring((folder or fp):find("[\128-\255]") == nil))
+    if not tail then return nil, "no Photos folder in the file path (" .. why .. ")" end
+    local short = moved(tail)
+    if short and short:match("^[Pp]hotos[/\\][^/\\_]+_[^/\\_]+_[^/\\_]+$") and whole(short) then
+        return "/" .. short, "by the file name (" .. why .. ")"
+    end
+    return "/" .. tail, "file name unchanged (" .. why .. ")"
 end
 
 -- A car's photo path from two plain numbers on its record: the model and
@@ -4856,6 +4913,13 @@ end
 -- folder's name needn't match the user name (an account renamed, or a
 -- Microsoft account's shortened folder), so the folders go first, whole,
 -- matched without case and with either slash.
+-- The Windows user name, or nil when it can't be read or is too short to
+-- replace safely. The profile folder's own name stands in for it.
+ui.user_name = function()
+    local u = os.getenv("USERNAME")
+    if not u or #u <= 1 then u = (os.getenv("USERPROFILE") or ""):match("([^\\/]+)[\\/]*$") end
+    return u and #u > 1 and u or nil
+end
 local function scrub(v)
     v = tostring(v or "")
     local function loose(t)
@@ -4865,13 +4929,13 @@ local function scrub(v)
         local d = os.getenv(k)
         if d and #d > 3 then v = v:gsub(loose(d), "<" .. k:lower() .. ">") end
     end
-    local user = os.getenv("USERNAME")
+    local user = ui.user_name()
     -- The name alone only as a whole word, with and without "_" counted as
     -- part of a word: so "Art" doesn't eat "parts", "Sam2" and "sam_"
     -- still scrub, and so does "Sam_backup". A slash or space next to it
     -- is a word edge, so a path still scrubs. A marker stands in until both
     -- passes are done, so a name like "user" can't match inside "<user>".
-    if user and #user > 1 then
+    if user then
         v = v:gsub("%f[%w_]" .. loose(user) .. "%f[^%w_]", "\1"):gsub("%f[%w]" .. loose(user) .. "%f[%W]", "\1")
         v = v:gsub("\1", "<user>")
     end
@@ -4881,32 +4945,54 @@ local function write_bug_report()
     local dir = mod_dir():gsub("/", "\\") .. "\\"
     local path = dir .. MOD .. "-bug-" .. os.date("%Y%m%d-%H%M%S") .. ".txt"
     local out = {}
-    local function add(v) out[#out + 1] = scrub(v) end
-    add(MOD .. " v" .. VERSION .. " (" .. tostring(ui.build) .. ") bug report -- " .. os.date("%Y-%m-%d %H:%M:%S"))
-    add("Drag this file into the GitHub issue. Your Windows user name has been replaced with <user>.")
-    add("== profiles.lua ==")
-    local f = io.open(mod_dir() .. "/profiles.lua", "r")
-    add(f and f:read("*a") or "(none)")
-    if f then f:close() end
-    local rows = board_rows() or {}
-    add("== board: " .. #rows .. " cars ==")
-    for _, r in ipairs(rows) do add(r.car .. (r.current and " (current)" or "") .. ": " .. table.concat(r.remaining, ",")) end
-    for id, n in pairs(failures) do
-        if not tostring(id):find("[@#]") then add("intake failures " .. id .. ": " .. n) end
+    -- Text that can't be scrubbed is left out, never written as it is.
+    local function add(v)
+        local ok, s = pcall(scrub, v)
+        out[#out + 1] = ok and s or "(left out: this part couldn't be checked for your Windows user name)"
     end
-    local lf = io.open(dir .. "..\\..\\UE4SS.log", "r")
-    if lf then
+    -- Each part on its own, so one that fails doesn't take the report with it.
+    local function part(what, fn)
+        local ok, err = pcall(fn)
+        if not ok then
+            log("bug report: " .. what .. " failed, " .. tostring(err))
+            add("(" .. what .. " couldn't be read in full: " .. tostring(err) .. ")")
+        end
+    end
+    add(MOD .. " v" .. VERSION .. " (" .. tostring(ui.build) .. ") bug report -- " .. os.date("%Y-%m-%d %H:%M:%S"))
+    local okU, user = pcall(ui.user_name)
+    add(okU and user and "Drag this file into the GitHub issue. Your Windows user name has been replaced with <user>."
+        or "Your Windows user name couldn't be replaced, so it may still be in this file. Check the file before you drag it into the GitHub issue.")
+    add("== profiles.lua ==")
+    part("profiles.lua", function()
+        local f = io.open(mod_dir() .. "/profiles.lua", "r")
+        add(f and f:read("*a") or "(none)")
+        if f then f:close() end
+    end)
+    part("board", function()
+        local rows = board_rows() or {}
+        add("== board: " .. #rows .. " cars ==")
+        for _, r in ipairs(rows) do add(r.car .. (r.current and " (current)" or "") .. ": " .. table.concat(r.remaining, ",")) end
+    end)
+    part("intake failures", function()
+        for id, n in pairs(failures) do
+            if not tostring(id):find("[@#~]") then add("intake failures " .. tostring(id) .. ": " .. tostring(n)) end
+        end
+    end)
+    part("UE4SS.log", function()
+        local lf = io.open(dir .. "..\\..\\UE4SS.log", "r")
+        if not lf then return end
         local mine = {}
         for line in lf:lines() do if line:find("[" .. MOD .. "]", 1, true) then mine[#mine + 1] = line end end
         lf:close()
         add("== UE4SS.log: " .. MOD .. " lines (last 300) ==")
         add(table.concat(mine, "\n", math.max(1, #mine - 299), #mine))
-    end
+    end)
     local wf = io.open(path, "w")
     if not wf then return nil end
     local okW = wf:write(table.concat(out, "\n"), "\n")
     local okC = wf:close()
     if not (okW and okC) then return nil end
+    log("bug report saved: " .. path:match("[^\\]+$"))
     return path
 end
 
@@ -5916,23 +6002,33 @@ local function sale_post(id, entry)
         if not ui.savedDir then
             pcall(function() ui.savedDir = text_of(StaticFindObject("/Script/Engine.Default__KismetSystemLibrary"):GetProjectSavedDirectory()) end)
         end
+        local how, dropped = {}, {}
         for _, ph in ipairs(phs) do
             local okT, tex = pcall(function() return ph.Texture end)
             local okP2, fp = pcall(function() return text_of(ph.FilePath) end)
-            local o = {}
-            local okN = gm and okP2 and pcall(function() gm:ChangePhotoPathToCurrentSaveFile(fp, o) end)
-            local np = okN and text_of(out_field("NewPath", o)) or nil
-            local _, cut = (np or ""):lower():find("saved", 1, true)
-            if okT and valid(tex) and cut and ui.savedDir and ui.savedDir ~= "" then
-                paths[#paths + 1] = ui.savedDir .. np:sub(cut + 1)
+            local rel, note = ui.photo_rel(gm, okP2 and fp or nil)
+            if not (okT and valid(tex)) then rel, note = nil, "no texture" end
+            if not (ui.savedDir and ui.savedDir ~= "") then rel, note = nil, "saved folder unread" end
+            if rel then
+                paths[#paths + 1] = ui.savedDir .. rel
                 texs[#texs + 1] = tex
+                how[note] = (how[note] or 0) + 1
+            else
+                dropped[note] = (dropped[note] or 0) + 1
             end
+        end
+        local function counts(t)
+            local c = {}
+            for k, n in pairs(t) do c[#c + 1] = n .. " " .. k end
+            table.sort(c)
+            return #c > 0 and table.concat(c, "; ") or "none"
         end
         -- The first path as it sits under the saved-files folder: the folder
         -- itself holds the player's profile path, so it stays out of the log.
         local firstRel = paths[1] and ui.savedDir and paths[1]:sub(#ui.savedDir + 1) or nil
         log(string.format("sale %s photos: n=%d of %d first=<saved>%s savedDir=%s", id, #paths, #phs, tostring(firstRel),
             (ui.savedDir and ui.savedDir ~= "") and "read" or "unread"))
+        log("sale " .. id .. " photo paths: " .. counts(how) .. ", dropped: " .. counts(dropped))
         if #paths == 0 then fails[#fails + 1] = "photo" end
         if not gm then fails[#fails + 1] = "record" end
     end

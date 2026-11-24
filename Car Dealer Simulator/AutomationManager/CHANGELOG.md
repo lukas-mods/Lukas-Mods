@@ -2,6 +2,14 @@
 
 Released versions only.
 
+## 1.0.3 - Photo and Report a Bug Fixes
+
+Bug fixes from player reports. No new features.
+
+- Report a Bug now works while a car that got its profile from the mod is in automation. Before, the button could do nothing.
+- Post for Sale: when the mod can't use the photo path the game gives it, it now works from the photo's file name instead. Before, it refused the car as having no Photo Studio photos.
+- If you don't own the Vehicle Platform, the app now says automation needs it. Before, it said automation wasn't ready yet.
+
 ## 1.0.2 - Car Pickup Fix
 
 A bug fix from a player report. No new features.

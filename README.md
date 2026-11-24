@@ -90,9 +90,9 @@ Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS, the 
 - **Car Pickup:** Add Bought Cars fills the transporter's list for you, and Send Now sends it with what's on it.
 - **Post for Sale:** a profile can price a car to a Competitiveness level and post it for you, through the game's own ad call.
 
-**[Download on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/60)** · **[Full Guide](guides/car-dealer-simulator/automation-manager.md)** · **[Release 1.0.2](../../releases/tag/CDS-AutomationManager-1.0.2)**
+**[Download on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/60)** · **[Full Guide](guides/car-dealer-simulator/automation-manager.md)** · **[Release 1.0.3](../../releases/tag/CDS-AutomationManager-1.0.3)**
 
-Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS, the same one Parts Manager uses: [the one on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/53), whose log says `UE4SS - v3.0.1 Beta #0 - Git SHA #44afb36d`. The "Up 2 You" DLC is optional, for Sport and Race parts.
+Needs the Steam version of the game and an **EXPERIMENTAL** build of UE4SS, the same one Parts Manager uses: [the one on Nexus Mods](https://www.nexusmods.com/cardealersimulator/mods/53), whose log says `UE4SS - v3.0.1 Beta #0 - Git SHA #44afb36d`. Automation needs the game's Vehicle Platform, which you buy in the game's Store. The "Up 2 You" DLC is optional, for Sport and Race parts.
 
 ---
 
